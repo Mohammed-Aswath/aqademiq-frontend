@@ -5,8 +5,10 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text.dart';
 import '../../../../core/utils/hex_color.dart';
 import '../../../../data/models/tag.dart';
+import '../../../../data/models/tag_resolve.dart';
 import '../../../../data/models/task.dart';
 import '../../../../data/repositories/tags_repository.dart';
+import '../../../../shared/mascot/ada_mascot.dart';
 import '../../../../shared/widgets/primary_button.dart';
 import '../../../plan/providers/plan_providers.dart';
 
@@ -56,8 +58,9 @@ class _LinkTaskSheetState extends ConsumerState<_LinkTaskSheet> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final tasks = ref.watch(dayTasksProvider).value ?? const <Task>[];
-    final tagsById = ref.watch(tagsByIdProvider).value ?? const <String, Tag>{};
+    final tasksAsync = ref.watch(dayTasksProvider);
+    final tasks = tasksAsync.value ?? const <Task>[];
+    final tagsById = ref.watch(tagsByIdProvider);
     final effectiveId = _selectedId ?? (tasks.isNotEmpty ? tasks.first.id : null);
 
     return Container(
@@ -100,6 +103,24 @@ class _LinkTaskSheetState extends ConsumerState<_LinkTaskSheet> {
                 selected: _noTask,
                 onTap: () => setState(() => _noTask = true),
               ),
+              // Confirmed-empty day (hasValue, so not the loading flash):
+              // explain the missing list instead of jumping to the CTA.
+              if (tasksAsync.hasValue && tasks.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 11, 18, 0),
+                  child: Row(
+                    children: [
+                      const AdaMascot(size: 28, expr: AdaExpr.neutral),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'Nothing planned today — focus freely, or add a task in Plan.',
+                          style: AppText.sans(size: 11, height: 1.4, color: colors.textMed),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               if (tasks.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(18, 11, 18, 5),
@@ -111,7 +132,7 @@ class _LinkTaskSheetState extends ConsumerState<_LinkTaskSheet> {
               for (final t in tasks)
                 _TaskRow(
                   task: t,
-                  tag: tagsById[t.tagId],
+                  tag: resolveStudyTag(tagsById.values, t.tagId),
                   selected: !_noTask && t.id == effectiveId,
                   onTap: () => setState(() {
                     _noTask = false;
@@ -184,7 +205,7 @@ class _TaskRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final color = tag != null ? hexColor(tag!.color) : colors.accent;
-    final meta = '${tag?.label ?? task.tagId} · ${task.durationMin ?? 0}m';
+    final meta = '${studyTagLabel(tag, task.tagId)} · ${task.durationMin ?? 0}m';
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,

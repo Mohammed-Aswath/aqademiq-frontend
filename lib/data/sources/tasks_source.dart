@@ -14,6 +14,11 @@ abstract interface class TasksSource {
   Future<TaskDto> move(String id, DateTime newDate);
   Future<void> delete(String id);
 
+  /// `POST /tasks/{id}/breakdown` — generate micro-steps for the occurrence
+  /// (Ada, or a server-side fallback). The steps are attached server-side and
+  /// come back on the next `tasksForDay` as the task's subtasks.
+  Future<void> breakdown(String id, DateTime date);
+
   /// Count of completed tasks in the Mon–Sun week containing [around].
   Future<int> completedThisWeek(DateTime around);
 }
@@ -119,6 +124,25 @@ class MockTasksSource implements TasksSource {
   }
 
   @override
+  Future<void> breakdown(String id, DateTime date) async {
+    for (final list in _byDay.values) {
+      final i = list.indexWhere((t) => t.id == id);
+      if (i >= 0) {
+        final t = list[i];
+        if (t.subtasks.isEmpty) {
+          list[i] = t.copyWith(subtasks: [
+            SubtaskDto(id: '$id-s1', title: 'Get started on ${t.title}'),
+            SubtaskDto(id: '$id-s2', title: 'Work through the core'),
+            SubtaskDto(id: '$id-s3', title: 'Review and wrap up'),
+          ]);
+        }
+        break;
+      }
+    }
+    return mockDelayVoid();
+  }
+
+  @override
   Future<int> completedThisWeek(DateTime around) async {
     final monday = _dayOnly(around).subtract(Duration(days: _dayOnly(around).weekday - 1));
     var count = 0;
@@ -142,7 +166,9 @@ class ApiTasksSource implements TasksSource {
   @override
   Future<List<TaskDto>> tasksForDay(DateTime date) async {
     final body = await _dio.getMap('/tasks', query: {'date': ymd(date)});
-    return listOf(body, 'tasks').map(_occToDto).toList(growable: false);
+    return listOf(body, 'tasks')
+        .map((j) => _occToDto(j, fallbackDate: date))
+        .toList(growable: false);
   }
 
   @override
@@ -151,23 +177,32 @@ class ApiTasksSource implements TasksSource {
       'title': input.title,
       'date': ymd(input.date),
       if (input.tagId.isNotEmpty) 'category': input.tagId,
+      if (input.note != null) 'note': input.note,
       if (input.durationMin != null) 'duration_seconds': input.durationMin! * 60,
       if (input.startTime != null) 'scheduled_at': naiveIso(input.startTime!),
+      // The bucket persists on its own column now, so Morning/Afternoon/Evening
+      // survive without a specific time (no more Anytime fallback).
+      'part_of_day': input.timeOfDay ?? 'anytime',
       if (input.repeat != null)
         'repeat': _repeatToWire(input.repeat!)
       else
         'repeat': {'kind': 'none'},
     };
-    return _occToDto(await _dio.postMap('/tasks', body));
+    return _occToDto(await _dio.postMap('/tasks', body), fallbackDate: input.date);
   }
 
   @override
   Future<TaskDto> update(TaskDto task) async {
     final body = <String, dynamic>{
+      'title': task.title,
       'status': task.done ? 'COMPLETE' : 'PENDING',
+      if (task.tagId.isNotEmpty) 'category': task.tagId,
+      'note': task.note ?? '',
+      if (task.durationMin != null) 'duration_seconds': task.durationMin! * 60,
       if (task.startTime != null) 'scheduled_at': naiveIso(task.startTime!),
+      'part_of_day': task.timeOfDay ?? 'anytime',
     };
-    return _occToDto(await _dio.patchMap('/tasks/${task.id}', body));
+    return _occToDto(await _dio.patchMap('/tasks/${task.id}', body), fallbackDate: task.date);
   }
 
   @override
@@ -191,6 +226,11 @@ class ApiTasksSource implements TasksSource {
   Future<void> delete(String id) => _dio.deleteMap('/tasks/$id');
 
   @override
+  Future<void> breakdown(String id, DateTime date) async {
+    await _dio.postMap('/tasks/$id/breakdown', {'date': ymd(date)});
+  }
+
+  @override
   Future<int> completedThisWeek(DateTime around) async {
     final body = await _dio.getMap('/tasks/history/completions');
     final monday = mondayOf(around);
@@ -205,13 +245,13 @@ class ApiTasksSource implements TasksSource {
 
   // --- wire mapping ---------------------------------------------------------
 
-  TaskDto _occToDto(Map<String, dynamic> j) {
+  TaskDto _occToDto(Map<String, dynamic> j, {DateTime? fallbackDate}) {
     final id = j['id'] as String? ?? '';
-    final scheduledAt = parseDateTime(j['scheduled_at']);
-    final date = dateFromOccurrenceId(id) ??
-        (scheduledAt != null
-            ? DateTime(scheduledAt.year, scheduledAt.month, scheduledAt.day)
-            : DateTime.now());
+    // Prefer the occurrence-id date, then the caller's day (list/create), so
+    // API `scheduled_at: "HH:mm"` can be anchored to a real calendar day.
+    final rawDate = dateFromOccurrenceId(id) ?? fallbackDate ?? DateTime.now();
+    final date = DateTime(rawDate.year, rawDate.month, rawDate.day);
+    final scheduledAt = parseDateTime(j['scheduled_at'], onDate: date);
     final durSec = (j['duration_seconds'] as num?)?.toInt();
     final steps = (j['steps'] as List?) ?? const [];
     final repeat = _repeatFromWire(j['repeat']);
@@ -220,6 +260,10 @@ class ApiTasksSource implements TasksSource {
       title: j['title'] as String? ?? '',
       tagId: j['category'] as String? ?? '',
       date: date,
+      note: (j['note'] as String?)?.isNotEmpty ?? false ? j['note'] as String : null,
+      // Time-of-day bucket now round-trips via its own field, so a bucket task
+      // (no scheduled_at) still regroups correctly instead of falling to Anytime.
+      timeOfDay: j['part_of_day'] as String?,
       startTime: scheduledAt,
       durationMin: durSec == null ? null : (durSec / 60).round(),
       repeat: repeat,

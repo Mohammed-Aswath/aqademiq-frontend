@@ -8,8 +8,7 @@ import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
-import '../../../data/fixtures/fixtures.dart';
-import '../../../data/models/enums.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../data/models/mood_log.dart';
 import '../../../data/repositories/mood_repository.dart';
 import '../../../shared/widgets/app_card.dart';
@@ -20,8 +19,8 @@ import '../../../shared/widgets/primary_button.dart';
 
 /// Frame `mood-evening` — full-screen Evening reflection. A left-aligned column
 /// with a 5-mood picker row (pre-selected "Good"/idx 3), an optional note field,
-/// and a "This week's mood" card. The CTA logs the reflection via
-/// [MoodRepository.log] (phase [MoodPhase.evening]) and returns to the planner.
+/// and a "This week's mood" card. The CTA upserts mood + optional reflection via
+/// [MoodRepository.upsertDay] and returns to the planner.
 class MoodEveningScreen extends ConsumerStatefulWidget {
   const MoodEveningScreen({super.key});
 
@@ -51,13 +50,18 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
   }
 
   Future<void> _save() async {
-    await ref.read(moodRepositoryProvider).log(
-          date: Fixtures.today,
-          phase: MoodPhase.evening,
+    final note = _note.text.trim();
+    // Persist the selected mood on the morning/adhoc wire (mood_index), then
+    // optionally the evening reflection. Reflection is never required — an
+    // empty note simply skips / clears the reflection write.
+    await ref.read(moodRepositoryProvider).upsertDay(
+          date: AppDate.today(),
           mood: _sel,
-          note: _note.text.isEmpty ? null : _note.text,
+          note: note,
+          writeReflection: true,
         );
     ref.invalidate(moodWeekProvider);
+    ref.invalidate(streakProvider);
     if (mounted) context.go(Routes.plan);
   }
 
@@ -76,8 +80,10 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final logs = ref.watch(moodWeekProvider).value ?? const <MoodLog>[];
-    final monday = Fixtures.today.subtract(Duration(days: Fixtures.today.weekday - 1));
+    final logsAsync = ref.watch(moodWeekProvider);
+    final logs = logsAsync.value ?? const <MoodLog>[];
+    final today = AppDate.today();
+    final monday = today.subtract(Duration(days: today.weekday - 1));
     return Scaffold(
       backgroundColor: colors.surface,
       body: DismissKeyboard(
@@ -182,6 +188,15 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
                           ),
                       ],
                     ),
+                    // First check-in of the week: say what the hollow circles
+                    // become (hasValue so the hint doesn't flash during load).
+                    if (logsAsync.hasValue && logs.isEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Your week fills in as you check in. Tonight counts!',
+                        style: AppText.sans(size: 10.5, color: colors.textDim),
+                      ),
+                    ],
                   ],
                 ),
               ),

@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../data/models/task.dart';
 import '../../features/ada/presentation/ada_screen.dart';
 import '../../features/auth/presentation/guest_ada_prompt.dart';
 import '../../features/auth/presentation/guest_save_prompt.dart';
@@ -32,6 +33,7 @@ import '../../features/plan/presentation/add_task_screen.dart';
 import '../../features/plan/presentation/plan_screen.dart';
 import '../../features/settings/presentation/settings_email_screen.dart';
 import '../../features/settings/presentation/settings_home_screen.dart';
+import '../../features/settings/presentation/settings_memories_screen.dart';
 import '../../features/settings/presentation/settings_notif_screen.dart';
 import '../../features/settings/presentation/settings_profile_screen.dart';
 import '../../features/settings/presentation/settings_sounds_screen.dart';
@@ -79,6 +81,7 @@ abstract final class Routes {
   static const settingsProfile = '/settings/profile';
   static const settingsNotif = '/settings/notifications';
   static const settingsSounds = '/settings/prism';
+  static const settingsMemories = '/settings/memories';
   static const settingsEmail = '/settings/email';
 
   // Feedback board (full-screen, pushed over the shell).
@@ -124,7 +127,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.obPeak, builder: (_, _) => const ObPeakScreen()),
       GoRoute(path: Routes.obPrism, builder: (_, _) => const ObPrismScreen()),
       GoRoute(path: Routes.obLoading, builder: (_, _) => const AdaLoadingScreen()),
-      GoRoute(path: Routes.addTask, builder: (_, _) => const AddTaskScreen()),
+      GoRoute(
+        path: Routes.addTask,
+        // `extra` carries the task to edit (null → create a new task).
+        builder: (_, state) => AddTaskScreen(existing: state.extra as Task?),
+      ),
       GoRoute(path: Routes.focusEnd, builder: (_, _) => const FocusEndScreen()),
       GoRoute(path: Routes.moodMorning, builder: (_, _) => const MoodMorningScreen()),
       GoRoute(path: Routes.moodEvening, builder: (_, _) => const MoodEveningScreen()),
@@ -132,6 +139,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.settingsProfile, builder: (_, _) => const SettingsProfileScreen()),
       GoRoute(path: Routes.settingsNotif, builder: (_, _) => const NotificationsScreen()),
       GoRoute(path: Routes.settingsSounds, builder: (_, _) => const PrismSettingsScreen()),
+      GoRoute(path: Routes.settingsMemories, builder: (_, _) => const SettingsMemoriesScreen()),
       GoRoute(path: Routes.settingsEmail, builder: (_, _) => const EmailSettingsScreen()),
       GoRoute(path: Routes.settingsFeedback, builder: (_, _) => const FeedbackBoardScreen()),
       GoRoute(

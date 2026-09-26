@@ -10,23 +10,32 @@ import '../../../../shared/widgets/primary_button.dart';
 /// Returns the chosen bucket label ("Anytime"/"Morning"/"Afternoon"/"Evening"),
 /// or the formatted time ("2:30 PM") if the user sets a specific time via the
 /// custom dialog. Returns `null` on dismiss.
-Future<String?> showTimeOfDayPicker(BuildContext context) {
+Future<String?> showTimeOfDayPicker(BuildContext context, {String? current}) {
   return showModalBottomSheet<String>(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0x4C140F1C),
-    builder: (_) => const _TimeOfDaySheet(),
+    builder: (_) => _TimeOfDaySheet(current: current),
   );
 }
 
+const _buckets = ['Anytime', 'Morning', 'Afternoon', 'Evening'];
+
 class _TimeOfDaySheet extends StatelessWidget {
-  const _TimeOfDaySheet();
+  const _TimeOfDaySheet({this.current});
+
+  /// The currently-selected label ("Anytime"/"Morning"/…) or a specific-time
+  /// string ("2:30 PM"). Null defaults to Anytime.
+  final String? current;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final selected = current ?? 'Anytime';
+    // A non-bucket value is a specific time, so highlight "Specific time".
+    final isSpecific = !_buckets.contains(selected);
     return Container(
       decoration: BoxDecoration(
         color: colors.surface,
@@ -79,7 +88,7 @@ class _TimeOfDaySheet extends StatelessWidget {
                 icon: Icons.all_inclusive,
                 label: 'Anytime',
                 sub: 'Ada slots it into a free moment',
-                active: true,
+                active: selected == 'Anytime',
                 onTap: () => Navigator.of(context).pop('Anytime'),
               ),
               const SizedBox(height: 1),
@@ -87,6 +96,7 @@ class _TimeOfDaySheet extends StatelessWidget {
                 icon: Icons.wb_twilight,
                 label: 'Morning',
                 sub: 'Before 12 PM',
+                active: selected == 'Morning',
                 onTap: () => Navigator.of(context).pop('Morning'),
               ),
               const SizedBox(height: 1),
@@ -94,6 +104,7 @@ class _TimeOfDaySheet extends StatelessWidget {
                 icon: Icons.light_mode,
                 label: 'Afternoon',
                 sub: '12 – 5 PM',
+                active: selected == 'Afternoon',
                 onTap: () => Navigator.of(context).pop('Afternoon'),
               ),
               const SizedBox(height: 1),
@@ -101,13 +112,16 @@ class _TimeOfDaySheet extends StatelessWidget {
                 icon: Icons.nights_stay,
                 label: 'Evening',
                 sub: 'After 5 PM',
+                active: selected == 'Evening',
                 onTap: () => Navigator.of(context).pop('Evening'),
               ),
               const SizedBox(height: 1),
               _OptRow(
                 icon: Icons.schedule,
                 label: 'Specific time',
-                trailing: const _SetPill(),
+                active: isSpecific,
+                // When a specific time is already set, show it instead of "Set".
+                trailing: isSpecific ? _SetPill(label: selected) : const _SetPill(),
                 onTap: () async {
                   final picked = await _showSpecificTimeDialog(context);
                   if (picked != null && context.mounted) {
@@ -197,23 +211,27 @@ class _OptRow extends StatelessWidget {
 
 /// Trailing "Set →" pill (prototype `SetPill`).
 class _SetPill extends StatelessWidget {
-  const _SetPill();
+  const _SetPill({this.label});
+
+  /// Shown when a specific time is already chosen; otherwise the "Set →" prompt.
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final active = label != null;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       decoration: BoxDecoration(
-        color: colors.bg,
+        color: active ? colors.accentSoft : colors.bg,
         borderRadius: BorderRadius.circular(AppRadius.pill),
       ),
       child: Text(
-        'Set →',
+        label ?? 'Set →',
         style: AppText.sans(
           size: 11,
           weight: FontWeight.w700,
-          color: colors.textMed,
+          color: active ? colors.accent : colors.textMed,
         ),
       ),
     );
@@ -253,8 +271,21 @@ Future<String?> _showSpecificTimeDialog(BuildContext context) {
   );
 }
 
-class _SpecificTimeDialog extends StatelessWidget {
+class _SpecificTimeDialog extends StatefulWidget {
   const _SpecificTimeDialog();
+
+  @override
+  State<_SpecificTimeDialog> createState() => _SpecificTimeDialogState();
+}
+
+class _SpecificTimeDialogState extends State<_SpecificTimeDialog> {
+  // Seeded to the previous mock default (2:30 PM) so nothing looks empty.
+  int _hour = 2; // 1..12
+  int _minute = 30; // 0..59
+  bool _pm = true;
+
+  String get _formatted =>
+      '$_hour:${_minute.toString().padLeft(2, '0')} ${_pm ? 'PM' : 'AM'}';
 
   @override
   Widget build(BuildContext context) {
@@ -319,16 +350,23 @@ class _SpecificTimeDialog extends StatelessWidget {
                             ),
                           ),
                         ),
-                        const Row(
+                        Row(
                           children: [
                             Expanded(
-                              child: _TimeWheelCol(values: [1, 2, 3], selected: 2),
+                              child: _TimeWheel(
+                                count: 12,
+                                initialIndex: _hour - 1,
+                                label: (i) => '${i + 1}',
+                                onChanged: (i) => setState(() => _hour = i + 1),
+                              ),
                             ),
-                            _WheelColon(),
+                            const _WheelColon(),
                             Expanded(
-                              child: _TimeWheelCol(
-                                values: [15, 30, 45],
-                                selected: 30,
+                              child: _TimeWheel(
+                                count: 60,
+                                initialIndex: _minute,
+                                label: (i) => i.toString().padLeft(2, '0'),
+                                onChanged: (i) => setState(() => _minute = i),
                               ),
                             ),
                           ],
@@ -337,13 +375,16 @@ class _SpecificTimeDialog extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const _AmPmSegmented(),
+                  _AmPmToggle(
+                    pm: _pm,
+                    onChanged: (v) => setState(() => _pm = v),
+                  ),
                 ],
               ),
               const SizedBox(height: 16),
               PrimaryButton(
-                label: 'Set · 2:30 PM',
-                onPressed: () => Navigator.of(context).pop('2:30 PM'),
+                label: 'Set · $_formatted',
+                onPressed: () => Navigator.of(context).pop(_formatted),
               ),
             ],
           ),
@@ -353,35 +394,67 @@ class _SpecificTimeDialog extends StatelessWidget {
   }
 }
 
-/// A vertical wheel column (prototype `TimeWheelCol`): selected value large,
-/// neighbours dimmed.
-class _TimeWheelCol extends StatelessWidget {
-  const _TimeWheelCol({required this.values, required this.selected});
+/// A scrollable wheel column (prototype `TimeWheelCol`): the centered value is
+/// large, neighbours dimmed. Reports the selected index as the wheel settles.
+class _TimeWheel extends StatefulWidget {
+  const _TimeWheel({
+    required this.count,
+    required this.initialIndex,
+    required this.label,
+    required this.onChanged,
+  });
 
-  final List<int> values;
-  final int selected;
+  final int count;
+  final int initialIndex;
+  final String Function(int) label;
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_TimeWheel> createState() => _TimeWheelState();
+}
+
+class _TimeWheelState extends State<_TimeWheel> {
+  late final FixedExtentScrollController _controller =
+      FixedExtentScrollController(initialItem: widget.initialIndex);
+  late int _selected = widget.initialIndex;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < values.length; i++) ...[
-          if (i > 0) const SizedBox(height: 9),
-          Text(
-            values[i].toString().padLeft(2, '0'),
-            style: AppText.sans(
-              size: values[i] == selected ? 22 : 15,
-              weight:
-                  values[i] == selected ? FontWeight.w800 : FontWeight.w600,
-              color: values[i] == selected
-                  ? colors.text
-                  : const Color(0xFFC8C4BE),
-            ),
-          ),
-        ],
-      ],
+    return SizedBox(
+      height: 120,
+      child: ListWheelScrollView.useDelegate(
+        controller: _controller,
+        itemExtent: 40,
+        perspective: 0.004,
+        physics: const FixedExtentScrollPhysics(),
+        onSelectedItemChanged: (i) {
+          setState(() => _selected = i);
+          widget.onChanged(i);
+        },
+        childDelegate: ListWheelChildBuilderDelegate(
+          childCount: widget.count,
+          builder: (context, i) {
+            final selected = i == _selected;
+            return Center(
+              child: Text(
+                widget.label(i),
+                style: AppText.sans(
+                  size: selected ? 22 : 15,
+                  weight: selected ? FontWeight.w800 : FontWeight.w600,
+                  color: selected ? colors.text : const Color(0xFFC8C4BE),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -399,47 +472,44 @@ class _WheelColon extends StatelessWidget {
   }
 }
 
-/// AM/PM segmented control with PM selected (prototype state).
-class _AmPmSegmented extends StatelessWidget {
-  const _AmPmSegmented();
+/// AM/PM toggle — tap to switch. The active half is accent-filled.
+class _AmPmToggle extends StatelessWidget {
+  const _AmPmToggle({required this.pm, required this.onChanged});
+
+  final bool pm;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    Widget seg({required String label, required bool active, required VoidCallback onTap}) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+          decoration: BoxDecoration(
+            color: active ? colors.accent : colors.bg,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            label,
+            style: AppText.sans(
+              size: 12,
+              weight: active ? FontWeight.w800 : FontWeight.w700,
+              color: active ? Colors.white : colors.textMed,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-          decoration: BoxDecoration(
-            color: colors.bg,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            'AM',
-            style: AppText.sans(
-              size: 12,
-              weight: FontWeight.w700,
-              color: colors.textMed,
-            ),
-          ),
-        ),
+        seg(label: 'AM', active: !pm, onTap: () => onChanged(false)),
         const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-          decoration: BoxDecoration(
-            color: colors.accent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            'PM',
-            style: AppText.sans(
-              size: 12,
-              weight: FontWeight.w800,
-              color: Colors.white,
-            ),
-          ),
-        ),
+        seg(label: 'PM', active: pm, onTap: () => onChanged(true)),
       ],
     );
   }

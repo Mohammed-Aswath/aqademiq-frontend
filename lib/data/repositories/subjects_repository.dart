@@ -29,12 +29,44 @@ class SubjectsRepository {
 
   Future<void> delete(String id) => _source.delete(id);
 
-  Future<Semester> upsertSemester(Semester semester) async {
-    final dto = await _source.upsertSemester(semester.toDto());
+  Future<Semester> upsertSemester(
+    Semester semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final dto = await _source.upsertSemester(
+      semester.toDto(),
+      start: start,
+      end: end,
+    );
     return dto.toModel();
   }
 
   Future<void> deleteSemester(String id) => _source.deleteSemester(id);
+
+  Future<String> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) {
+    return _source.uploadFile(
+      subjectId: subjectId,
+      name: name,
+      kind: kind,
+      mimeType: mimeType,
+      bytes: bytes,
+    );
+  }
+
+  Future<List<SubjectFileRef>> files(String subjectId) =>
+      _source.files(subjectId);
+
+  Future<String> fileDownloadUrl(String fileId) =>
+      _source.fileDownloadUrl(fileId);
+
+  Future<void> deleteFile(String fileId) => _source.deleteFile(fileId);
 }
 
 final subjectsRepositoryProvider = Provider<SubjectsRepository>((ref) {
@@ -49,8 +81,19 @@ final subjectsRepositoryProvider = Provider<SubjectsRepository>((ref) {
 class SubjectsController extends AsyncNotifier<List<Subject>> {
   @override
   Future<List<Subject>> build() {
-    // A fresh guest has no subjects yet — they're created during onboarding.
-    if (ref.watch(isGuestProvider)) return Future.value(const <Subject>[]);
+    // Mock demo only: a fresh guest has no subjects until onboarding links them
+    // to an account, so short-circuit to keep the demo's empty start.
+    //
+    // Live builds must NOT short-circuit on guest. An anonymous user completes
+    // onboarding — which creates their subjects server-side under that same
+    // anonymous id — yet stays a guest afterwards (no email linked). Returning
+    // an empty list for a live guest hid those just-created subjects entirely:
+    // the reported "subject created in onboarding doesn't show on the frontend"
+    // bug. The API returns the real course list (empty if not yet onboarded),
+    // so always fetch it.
+    if (Env.useMocks && ref.watch(isGuestProvider)) {
+      return Future.value(const <Subject>[]);
+    }
     return ref.watch(subjectsRepositoryProvider).all();
   }
 
@@ -78,9 +121,14 @@ class SemestersController extends AsyncNotifier<List<Semester>> {
   Future<List<Semester>> build() =>
       ref.watch(subjectsRepositoryProvider).semesters();
 
-  Future<Semester> save(Semester semester) async {
-    final saved =
-        await ref.read(subjectsRepositoryProvider).upsertSemester(semester);
+  Future<Semester> save(
+    Semester semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final saved = await ref
+        .read(subjectsRepositoryProvider)
+        .upsertSemester(semester, start: start, end: end);
     ref.invalidateSelf();
     return saved;
   }
@@ -99,6 +147,15 @@ final semestersProvider =
 final subjectsByIdProvider = FutureProvider<Map<String, Subject>>((ref) async {
   final subjects = await ref.watch(subjectsProvider.future);
   return {for (final s in subjects) s.id: s};
+});
+
+/// The stored materials for a subject, for the detail screen's Materials list.
+/// Re-fetches whenever the subjects store changes (e.g. after an upload).
+// ignore: specify_nonobvious_property_types
+final subjectFilesProvider =
+    FutureProvider.family<List<SubjectFileRef>, String>((ref, subjectId) {
+  ref.watch(subjectsProvider);
+  return ref.watch(subjectsRepositoryProvider).files(subjectId);
 });
 
 /// The currently selected semester id (header label + "switch" persistence).

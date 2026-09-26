@@ -8,8 +8,9 @@ import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../core/utils/launch_external.dart';
-import '../../../data/fixtures/fixtures.dart';
+import '../../../data/models/enums.dart';
 import '../../../data/models/mood_log.dart';
 import '../../../data/models/user_stats.dart';
 import '../../../data/repositories/mood_repository.dart';
@@ -18,6 +19,7 @@ import '../../../shared/mascot/ada_mascot.dart';
 import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/app_scaffold.dart';
 import '../../../shared/widgets/share_sheet.dart';
+import '../../plan/presentation/sheets/log_mood_sheet.dart';
 import '../../plan/providers/plan_providers.dart';
 import '../../settings/presentation/sheets/rate_sheet.dart';
 import '../../settings/providers/profile_controller.dart';
@@ -91,7 +93,13 @@ class _Body extends ConsumerWidget {
                 children: [
                   Text('Keep it frozen, ${name.split(' ').first}', style: AppText.sans(size: 15, weight: FontWeight.w800, letterSpacing: -0.2, color: colors.text)),
                   const SizedBox(height: 2),
-                  Text('$streak-day streak · Prism 3 days', style: AppText.sans(size: 10.5, color: colors.textMed)),
+                  // "0-day streak" is a deflating opener — invite instead.
+                  Text(
+                    streak == 0
+                        ? 'Start your streak — log today'
+                        : (streak == 1 ? '1-day streak' : '$streak-day streak'),
+                    style: AppText.sans(size: 10.5, color: colors.textMed),
+                  ),
                 ],
               ),
             ),
@@ -100,7 +108,7 @@ class _Body extends ConsumerWidget {
         const SizedBox(height: 14),
         _StatsCard(streak: streak, completed: completed),
         const SizedBox(height: 8),
-        _MoodCard(moods: moods, onAddToday: () => unawaited(context.push(Routes.moodEvening))),
+        _MoodCard(moods: moods),
         const SizedBox(height: 16),
         const _LinksCard(),
         const SizedBox(height: 16),
@@ -187,30 +195,86 @@ class _StatCol extends StatelessWidget {
   }
 }
 
-class _MoodCard extends StatelessWidget {
-  const _MoodCard({required this.moods, required this.onAddToday});
+class _MoodCard extends ConsumerWidget {
+  const _MoodCard({required this.moods});
 
   final List<MoodLog> moods;
-  final VoidCallback onAddToday;
 
   static const _days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  static const _dayNames = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
   int? _moodFor(DateTime monday, int i) {
     final day = monday.add(Duration(days: i));
     int? mood;
     for (final l in moods) {
       if (l.date.year == day.year && l.date.month == day.month && l.date.day == day.day) {
-        mood = l.mood;
+        // Prefer the mood-index wire (morning/adhoc); evening entries may carry
+        // a synthetic fallback mood when only a reflection exists.
+        if (l.phase != MoodPhase.evening) mood = l.mood;
+        mood ??= l.mood;
       }
     }
     return mood;
   }
 
+  String? _noteFor(DateTime day) {
+    String? note;
+    for (final l in moods) {
+      if (l.date.year == day.year &&
+          l.date.month == day.month &&
+          l.date.day == day.day &&
+          l.note != null &&
+          l.note!.trim().isNotEmpty) {
+        note = l.note!.trim();
+      }
+    }
+    return note;
+  }
+
+  /// Latest note-bearing log for each day of the shown week, oldest first — the
+  /// "daily reflections" list under the mood strip.
+  List<MoodLog> _weekReflections(DateTime monday) {
+    final start = DateTime(monday.year, monday.month, monday.day);
+    final byDay = <int, MoodLog>{};
+    for (final l in moods) {
+      final note = l.note?.trim();
+      if (note == null || note.isEmpty) continue;
+      final diff = DateTime(l.date.year, l.date.month, l.date.day).difference(start).inDays;
+      if (diff < 0 || diff > 6) continue;
+      byDay[diff] = l; // later entries win (matches _moodFor's last-wins)
+    }
+    final days = byDay.keys.toList()..sort();
+    return [for (final d in days) byDay[d]!];
+  }
+
+  Future<void> _editDay(BuildContext context, WidgetRef ref, DateTime day) async {
+    final dayOnly = DateTime(day.year, day.month, day.day);
+    final monday = dayOnly.subtract(Duration(days: dayOnly.weekday - 1));
+    final result = await showLogMoodSheet(
+      context,
+      initialMood: _moodFor(monday, dayOnly.weekday - 1) ?? 3,
+      initialNote: _noteFor(dayOnly),
+      includeNote: true,
+    );
+    if (result == null) return;
+    await ref.read(moodRepositoryProvider).upsertDay(
+          date: dayOnly,
+          mood: result.mood,
+          note: result.note,
+          writeReflection: true,
+        );
+    ref
+      ..invalidate(moodWeekProvider)
+      ..invalidate(streakProvider);
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
-    final monday = Fixtures.today.subtract(Duration(days: Fixtures.today.weekday - 1));
-    final todayIndex = Fixtures.today.weekday - 1;
+    final today = AppDate.today();
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    final todayIndex = today.weekday - 1;
+    final reflections = _weekReflections(monday);
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -221,19 +285,41 @@ class _MoodCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               for (var i = 0; i < 7; i++)
-                Column(
-                  children: [
-                    SizedBox(
-                      width: 28,
-                      height: 28,
-                      child: Center(child: _moodSlot(colors, monday, i, todayIndex)),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(_days[i], style: AppText.sans(size: 9, weight: FontWeight.w700, color: i == todayIndex ? colors.accent : colors.textDim)),
-                  ],
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => unawaited(_editDay(context, ref, monday.add(Duration(days: i)))),
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: Center(child: _moodSlot(colors, monday, i, todayIndex)),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(_days[i], style: AppText.sans(size: 9, weight: FontWeight.w700, color: i == todayIndex ? colors.accent : colors.textDim)),
+                    ],
+                  ),
                 ),
             ],
           ),
+          if (reflections.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(height: 1, color: colors.border),
+            const SizedBox(height: 12),
+            for (var i = 0; i < reflections.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i == reflections.length - 1 ? 0 : 10),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => unawaited(_editDay(context, ref, reflections[i].date)),
+                  child: _ReflectionRow(
+                    colors: colors,
+                    log: reflections[i],
+                    dayName: _dayNames[reflections[i].date.weekday - 1],
+                  ),
+                ),
+              ),
+          ],
         ],
       ),
     );
@@ -245,19 +331,50 @@ class _MoodCard extends StatelessWidget {
       return AdaMascot(size: 24, toneIndex: mood, melt: (4 - mood) / 4, bubbles: 0);
     }
     final isToday = i == todayIndex;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: isToday ? onAddToday : null,
-      child: Container(
-        width: 21,
-        height: 21,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: isToday ? colors.accent : const Color(0xFFD8D4CC), width: 1.5),
-        ),
-        child: isToday ? Text('+', style: TextStyle(fontSize: 12, color: colors.accent, fontWeight: FontWeight.w700, height: 1)) : null,
+    return Container(
+      width: 21,
+      height: 21,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: isToday ? colors.accent : const Color(0xFFD8D4CC), width: 1.5),
       ),
+      child: isToday
+          ? Text('+', style: TextStyle(fontSize: 12, color: colors.accent, fontWeight: FontWeight.w700, height: 1))
+          : null,
+    );
+  }
+}
+
+/// One "daily reflection" line: the day's mood face, the weekday, and the note.
+class _ReflectionRow extends StatelessWidget {
+  const _ReflectionRow({required this.colors, required this.log, required this.dayName});
+
+  final AppColors colors;
+  final MoodLog log;
+  final String dayName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: AdaMascot(size: 18, toneIndex: log.mood, melt: (4 - log.mood) / 4, bubbles: 0),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(dayName, style: AppText.sans(size: 9, weight: FontWeight.w800, letterSpacing: AppText.em(0.06, 9), color: colors.textDim)),
+              const SizedBox(height: 2),
+              Text(log.note!.trim(), style: AppText.sans(size: 12, height: 1.4, color: colors.text)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -270,9 +387,11 @@ class _LinksCard extends ConsumerWidget {
     final colors = context.colors;
     final links = <(String, VoidCallback)>[
       ('Rate the app', () => unawaited(showRateSheet(context))),
-      ('Share feedback', () => unawaited(openExternal(context, Uri(scheme: 'mailto', path: 'hello@aqademiq.app', queryParameters: {'subject': 'Aqademiq feedback'})))),
-      ('FAQ', () => unawaited(openExternal(context, Uri.parse('https://aqademiq.app/faq')))),
-      ('Follow us on Instagram', () => unawaited(openExternal(context, Uri.parse('https://instagram.com/aqademiq')))),
+      // Opens the in-app feedback board (backed by /feedback), not a mailto —
+      // the old mail link silently did nothing on web and never reached the board.
+      ('Share feedback', () => context.push(Routes.settingsFeedback)),
+      ('FAQ', () => unawaited(openExternal(context, Uri.parse('https://www.aqademiq.com/faq')))),
+      ('Follow us on Instagram', () => unawaited(openExternal(context, Uri.parse('https://www.instagram.com/tryaqademiq/')))),
     ];
     return AppCard(
       child: Column(

@@ -11,19 +11,23 @@ import '../../../core/theme/app_text.dart';
 import '../../../core/utils/date_format.dart';
 import '../../../core/utils/hex_color.dart';
 import '../../../data/auth/auth_repository.dart';
-import '../../../data/fixtures/fixtures.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/models/tag.dart';
+import '../../../data/models/tag_resolve.dart';
 import '../../../data/models/task.dart';
 import '../../../data/repositories/focus_repository.dart';
 import '../../../data/repositories/mood_repository.dart';
 import '../../../data/repositories/tags_repository.dart';
 import '../../../data/repositories/tasks_repository.dart';
+import '../../../shared/mascot/ada_mascot.dart';
 import '../../../shared/widgets/app_scaffold.dart';
+import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/guest_nudge_card.dart';
 import '../../focus/providers/linked_task_provider.dart';
+import '../plan_time.dart';
 import '../providers/plan_providers.dart';
 import '../providers/plan_ui_providers.dart';
+import 'pickers/date_picker.dart';
 import 'sheets/log_mood_sheet.dart';
 import 'sheets/month_picker_sheet.dart';
 import 'sheets/plan_menu.dart';
@@ -68,12 +72,21 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     final repeat = (draft.repeat != null && draft.repeat!.frequency != RepeatFrequency.none)
         ? draft.repeat
         : null;
+    // Prefer the raw picker label so "2:30 PM" becomes a real startTime (Planned).
+    // Falling back to dayPart alone keeps Morning/Afternoon/Evening + Anytime.
+    final resolved = draft.timeLabel != null
+        ? PlanTime.resolve(draft.timeLabel!, date)
+        : (
+            dayPart: draft.dayPart ?? DayPart.anytime,
+            startTime: null,
+          );
     final task = Task(
       id: '',
       title: draft.title,
-      tagId: tags.isNotEmpty ? tags.first.id : 'cc401',
+      tagId: tags.isNotEmpty ? tags.first.id : '',
       date: date,
-      dayPart: draft.dayPart ?? DayPart.anytime,
+      dayPart: resolved.dayPart,
+      startTime: resolved.startTime,
       durationMin: 30,
       repeat: repeat,
     );
@@ -88,20 +101,23 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   }
 
   Future<void> _menu() async {
-    final result = await showPlanMenu(context);
+    final result = await showPlanMenu(
+      context,
+      currentGrouping: ref.read(planViewModeProvider),
+    );
     if (!mounted || result == null) return;
     switch (result) {
       case PlanMenuResult.reschedule:
         await showRescheduleSheet(context);
       case PlanMenuResult.logMood:
-        final mood = await showLogMoodSheet(context);
-        if (mood != null) {
-          await ref.read(moodRepositoryProvider).log(
+        final result = await showLogMoodSheet(context);
+        if (result != null) {
+          await ref.read(moodRepositoryProvider).upsertDay(
                 date: ref.read(selectedDateProvider),
-                phase: MoodPhase.adhoc,
-                mood: mood,
+                mood: result.mood,
               );
           ref.invalidate(moodWeekProvider);
+          ref.invalidate(streakProvider);
         }
       case PlanMenuResult.groupingList:
         ref.read(planViewModeProvider.notifier).set(PlanViewMode.list);
@@ -119,7 +135,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   Widget build(BuildContext context) {
     final selected = ref.watch(selectedDateProvider);
     final tasksAsync = ref.watch(dayTasksProvider);
-    final tagsById = ref.watch(tagsByIdProvider).value ?? const <String, Tag>{};
+    final tagsById = ref.watch(tagsByIdProvider);
     final guest = ref.watch(isGuestProvider);
     final viewMode = ref.watch(planViewModeProvider);
     final expandedId = ref.watch(expandedTaskProvider);
@@ -131,7 +147,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         children: [
           PlanHeader(
             date: selected,
-            isToday: AppDate.sameDay(selected, Fixtures.today),
+            isToday: AppDate.sameDay(selected, AppDate.today()),
             guest: guest,
             onMonthTap: _pickMonth,
             onToday: dateCtrl.goToToday,
@@ -140,7 +156,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           ),
           PlanDateStrip(
             selected: selected,
-            today: Fixtures.today,
+            today: AppDate.today(),
             onSelect: dateCtrl.select,
           ),
           if (guest) ...[
@@ -156,11 +172,22 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               loading: () => const _PlanLoading(),
               error: (e, _) => _PlanError(onRetry: () => ref.invalidate(dayTasksProvider)),
               data: (tasks) {
-                if (tasks.isEmpty) {
-                  return _OtherDayEmpty(onAdd: _add);
-                }
+                // List mode owns its empty buckets; don't swallow the switch
+                // behind the shared "other day" empty state.
                 if (viewMode == PlanViewMode.list) {
-                  return _PlanListGrouped(tasks: tasks, tagsById: tagsById, onToggleDone: _toggleDone, onAddBucket: _addToBucket);
+                  return _PlanListGrouped(
+                    tasks: tasks,
+                    tagsById: tagsById,
+                    onToggleDone: _toggleDone,
+                    onAddBucket: _addToBucket,
+                    onAdd: _add,
+                  );
+                }
+                if (tasks.isEmpty) {
+                  return _OtherDayEmpty(
+                    onAdd: _add,
+                    isToday: AppDate.sameDay(selected, AppDate.today()),
+                  );
                 }
                 return _PlanTimeline(
                   tasks: tasks,
@@ -170,6 +197,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                   expandedId: expandedId,
                   onToggleAnytime: () => setState(() => _anytimeOpen = !_anytimeOpen),
                   onTogglePlanned: () => setState(() => _plannedOpen = !_plannedOpen),
+                  onAdd: _add,
                   onToggleDone: _toggleDone,
                   onExpand: (t) => ref.read(expandedTaskProvider.notifier).toggle(t.id),
                   onLater: _later,
@@ -188,7 +216,30 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
   void _delete(Task t) => unawaited(ref.read(dayTasksProvider.notifier).delete(t));
 
-  void _later(Task t) => _moveToTomorrow(t);
+  // "Later" opens the reschedule picker so the user chooses a day, rather than
+  // silently jumping the task to tomorrow.
+  void _later(Task t) => unawaited(_reschedule(t));
+
+  // "Break down": generate micro-tasks server-side (Ada, or a fallback) when the
+  // task has none yet, then expand to reveal them.
+  Future<void> _breakDown(Task t) async {
+    if (t.subtasks.isEmpty) {
+      try {
+        await ref
+            .read(tasksRepositoryProvider)
+            .breakdown(t.id, ref.read(selectedDateProvider));
+        ref.invalidate(dayTasksProvider);
+      } on Object {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Couldn't break this down. Try again.")),
+          );
+        }
+        return;
+      }
+    }
+    ref.read(expandedTaskProvider.notifier).toggle(t.id);
+  }
 
   void _moveToTomorrow(Task t) {
     final next = ref.read(selectedDateProvider).add(const Duration(days: 1));
@@ -199,12 +250,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   }
 
   Future<void> _reschedule(Task t) async {
-    final selected = ref.read(selectedDateProvider);
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: selected.add(const Duration(days: 1)),
-      firstDate: DateTime(selected.year - 1),
-      lastDate: DateTime(selected.year + 2),
+    // Same shared date sheet as Add Task / bulk reschedule "More options".
+    final picked = await showTaskDatePicker(
+      context,
+      initial: ref.read(selectedDateProvider),
     );
     if (picked != null && mounted) {
       await ref.read(dayTasksProvider.notifier).move(t, picked);
@@ -219,18 +268,20 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   }
 
   Future<void> _overflow(Task t) async {
-    final tag = ref.read(tagsByIdProvider).value?[t.tagId];
+    final tag = resolveStudyTag(ref.read(tagsByIdProvider).values, t.tagId);
     final color = tag != null ? hexColor(tag.color) : context.colors.accent;
     final action = await showTaskOverflowSheet(
       context,
       title: t.title,
-      subjectCode: tag?.label ?? t.tagId,
+      subjectCode: studyTagLabelFromTags(ref.read(tagsByIdProvider).values, t.tagId),
       subjectColor: color,
     );
     if (!mounted || action == null) return;
     switch (action) {
       case TaskOverflowAction.markDone:
         _toggleDone(t);
+      case TaskOverflowAction.edit:
+        await context.push(Routes.addTask, extra: t);
       case TaskOverflowAction.startSession:
         _startSession(t);
       case TaskOverflowAction.reschedule:
@@ -238,7 +289,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       case TaskOverflowAction.moveTomorrow:
         _moveToTomorrow(t);
       case TaskOverflowAction.breakDown:
-        ref.read(expandedTaskProvider.notifier).toggle(t.id);
+        await _breakDown(t);
       case TaskOverflowAction.delete:
         _delete(t);
     }
@@ -254,6 +305,7 @@ class _PlanTimeline extends StatelessWidget {
     required this.expandedId,
     required this.onToggleAnytime,
     required this.onTogglePlanned,
+    required this.onAdd,
     required this.onToggleDone,
     required this.onExpand,
     required this.onLater,
@@ -268,6 +320,7 @@ class _PlanTimeline extends StatelessWidget {
   final String? expandedId;
   final VoidCallback onToggleAnytime;
   final VoidCallback onTogglePlanned;
+  final VoidCallback onAdd;
   final ValueChanged<Task> onToggleDone;
   final ValueChanged<Task> onExpand;
   final ValueChanged<Task> onLater;
@@ -284,6 +337,9 @@ class _PlanTimeline extends StatelessWidget {
       padding: EdgeInsets.zero,
       children: [
         CollapseHead(label: 'ANYTIME', count: anytime.length, open: anytimeOpen, icon: Icons.schedule, onTap: onToggleAnytime),
+        // Empty section under an open head: same AddRow affordance as
+        // plan-otherday, so a "(0)" head is never followed by dead space.
+        if (anytimeOpen && anytime.isEmpty) AddRow(onTap: onAdd),
         if (anytimeOpen)
           for (final t in anytime)
             Padding(
@@ -293,11 +349,17 @@ class _PlanTimeline extends StatelessWidget {
                 onLater: () => onLater(t),
                 onDelete: () => onDelete(t),
                 onOverflow: () => onOverflow(t),
-                child: PlanTaskCard(task: t, tag: tagsById[t.tagId], onToggleDone: () => onToggleDone(t)),
+                child: PlanTaskCard(
+                  task: t,
+                  tag: resolveStudyTag(tagsById.values, t.tagId),
+                  onToggleDone: () => onToggleDone(t),
+                ),
               ),
             ),
         const SizedBox(height: 8),
         CollapseHead(label: 'PLANNED', count: planned.length, open: plannedOpen, onTap: onTogglePlanned),
+        if (plannedOpen && planned.isEmpty)
+          AddRow(label: 'Add a planned task', onTap: onAdd),
         if (plannedOpen)
           for (final t in planned) ...[
             Padding(
@@ -308,7 +370,11 @@ class _PlanTimeline extends StatelessWidget {
               ),
             ),
             if (expandedId == t.id && t.subtasks.isNotEmpty)
-              PlanTaskExpandedCard(task: t, tag: tagsById[t.tagId], onCollapse: () => onExpand(t))
+              PlanTaskExpandedCard(
+                task: t,
+                tag: resolveStudyTag(tagsById.values, t.tagId),
+                onCollapse: () => onExpand(t),
+              )
             else
               _SwipeableTask(
                 task: t,
@@ -317,7 +383,7 @@ class _PlanTimeline extends StatelessWidget {
                 onOverflow: () => onOverflow(t),
                 child: PlanTaskCard(
                   task: t,
-                  tag: tagsById[t.tagId],
+                  tag: resolveStudyTag(tagsById.values, t.tagId),
                   showBar: true,
                   onToggleDone: () => onToggleDone(t),
                   onTap: t.subtasks.isNotEmpty ? () => onExpand(t) : null,
@@ -383,17 +449,36 @@ class _PlanListGrouped extends ConsumerWidget {
     required this.tagsById,
     required this.onToggleDone,
     required this.onAddBucket,
+    required this.onAdd,
   });
 
   final List<Task> tasks;
   final Map<String, Tag> tagsById;
   final ValueChanged<Task> onToggleDone;
   final ValueChanged<DayPart> onAddBucket;
+  final VoidCallback onAdd;
 
   static const List<DayPart> _order = [DayPart.anytime, DayPart.morning, DayPart.afternoon, DayPart.evening];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // With zero tasks every bucket head hides, which used to leave a fully
+    // blank pane — greet instead, with the quick-add as the way back in.
+    if (tasks.isEmpty) {
+      return Center(
+        child: SingleChildScrollView(
+          child: EmptyState(
+            title: 'Uhh... nothing here yet',
+            subtitle: "Add a task and I'll slot it in.",
+            expr: AdaExpr.smile,
+            cheeks: true,
+            ctaLabel: 'Add a task',
+            onCta: onAdd,
+          ),
+        ),
+      );
+    }
+
     final colors = context.colors;
     final collapsed = ref.watch(collapsedGroupsProvider);
     final meta = <DayPart, (IconData, String, Color?)>{
@@ -424,7 +509,12 @@ class _PlanListGrouped extends ConsumerWidget {
               for (final t in groups[part]!)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: PlanTaskCard(task: t, tag: tagsById[t.tagId], showBar: part != DayPart.anytime, onToggleDone: () => onToggleDone(t)),
+                  child: PlanTaskCard(
+                    task: t,
+                    tag: resolveStudyTag(tagsById.values, t.tagId),
+                    showBar: part != DayPart.anytime,
+                    onToggleDone: () => onToggleDone(t),
+                  ),
                 ),
             const SizedBox(height: 12),
           ],
@@ -434,16 +524,25 @@ class _PlanListGrouped extends ConsumerWidget {
 }
 
 /// plan-otherday: a day with empty buckets + an add affordance (Today pill is in
-/// the header when not viewing today).
+/// the header when not viewing today). When the empty day is *today* — the tab's
+/// first impression — Ada greets above the bucket scaffold.
 class _OtherDayEmpty extends StatelessWidget {
-  const _OtherDayEmpty({required this.onAdd});
+  const _OtherDayEmpty({required this.onAdd, this.isToday = false});
   final VoidCallback onAdd;
+  final bool isToday;
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: EdgeInsets.zero,
       children: [
+        if (isToday)
+          const EmptyState.compact(
+            title: 'Clean slate!',
+            subtitle: 'Add one small thing to get rolling.',
+            sparkles: true,
+            cheeks: true,
+          ),
         const CollapseHead(label: 'ANYTIME', count: 0, open: true, icon: Icons.schedule),
         AddRow(onTap: onAdd),
         const SizedBox(height: 8),

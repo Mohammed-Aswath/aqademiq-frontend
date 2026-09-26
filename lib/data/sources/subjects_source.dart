@@ -5,13 +5,40 @@ import '../fixtures/fixtures.dart';
 import 'api_helpers.dart';
 import 'mock_latency.dart';
 
+/// A stored material for a subject, for the detail screen's Materials list.
+typedef SubjectFileRef = ({String id, String name, String sizeLabel, String kind});
+
 abstract interface class SubjectsSource {
   Future<List<SubjectDto>> all();
   Future<List<SemesterDto>> semesters();
   Future<SubjectDto> upsert(SubjectDto subject);
   Future<void> delete(String id);
-  Future<SemesterDto> upsertSemester(SemesterDto semester);
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  });
   Future<void> deleteSemester(String id);
+
+  /// Uploads a material for [subjectId] and returns the created file id. The
+  /// live impl runs the presign → PUT → commit handshake; the mock impl fakes
+  /// it locally (bumping the subject's file count).
+  Future<String> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  });
+
+  /// The stored materials for [subjectId] (from `GET /subjects/{id}`).
+  Future<List<SubjectFileRef>> files(String subjectId);
+
+  /// A short-lived signed URL to open/download the material [fileId].
+  Future<String> fileDownloadUrl(String fileId);
+
+  /// Permanently removes the material [fileId] (`DELETE /files/{id}`).
+  Future<void> deleteFile(String fileId);
 }
 
 class MockSubjectsSource implements SubjectsSource {
@@ -47,7 +74,13 @@ class MockSubjectsSource implements SubjectsSource {
   }
 
   @override
-  Future<SemesterDto> upsertSemester(SemesterDto semester) async {
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    // The Semester model only carries id + name, so start/end aren't stored in
+    // mock mode — they exist to drive the live API's date range.
     final created = semester.id.isEmpty
         ? semester.copyWith(id: 'sem-${DateTime.now().microsecondsSinceEpoch}')
         : semester;
@@ -65,6 +98,40 @@ class MockSubjectsSource implements SubjectsSource {
     _semesters.removeWhere((s) => s.id == id);
     return mockDelayVoid();
   }
+
+  @override
+  Future<String> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) async {
+    // No real storage in mock mode: bump the subject's file count so the
+    // materials header updates end-to-end.
+    final i = _subjects.indexWhere((s) => s.id == subjectId);
+    if (i >= 0) {
+      _subjects[i] = _subjects[i].copyWith(
+        fileCount: _subjects[i].fileCount + 1,
+      );
+    }
+    return mockDelay('file-${DateTime.now().microsecondsSinceEpoch}');
+  }
+
+  @override
+  Future<List<SubjectFileRef>> files(String subjectId) => mockDelay(const [
+        (id: 'f1', name: 'Syllabus.pdf', sizeLabel: '2.4 MB', kind: 'syllabus'),
+        (id: 'f2', name: 'Lecture 1.pdf', sizeLabel: '1.1 MB', kind: 'slides'),
+      ]);
+
+  @override
+  Future<String> fileDownloadUrl(String fileId) =>
+      mockDelay('https://example.com/$fileId.pdf');
+
+  @override
+  // Mock has no real storage; the fixture list is regenerated per fetch, so a
+  // deletion doesn't persist here. Live mode does the real DELETE.
+  Future<void> deleteFile(String fileId) => mockDelay(null);
 }
 
 /// Live impl — `/v1/subjects` + `/v1/semesters` (contract §12.D, §12.E).
@@ -106,13 +173,20 @@ class ApiSubjectsSource implements SubjectsSource {
   Future<void> delete(String id) => _dio.deleteMap('/subjects/$id');
 
   @override
-  Future<SemesterDto> upsertSemester(SemesterDto semester) async {
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
     if (semester.id.isEmpty) {
       final now = DateTime.now();
+      final startDate = start ?? DateTime(now.year, now.month, now.day);
+      final endDate =
+          end ?? DateTime(now.year, now.month + 6, now.day);
       final json = await _dio.postMap('/semesters', {
         'name': semester.name,
-        'start': ymd(now),
-        'end': ymd(now.add(const Duration(days: 180))),
+        'start': ymd(startDate),
+        'end': ymd(endDate),
       });
       return _semToDto(json);
     }
@@ -123,6 +197,68 @@ class ApiSubjectsSource implements SubjectsSource {
 
   @override
   Future<void> deleteSemester(String id) => _dio.deleteMap('/semesters/$id');
+
+  @override
+  Future<String> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) async {
+    final contentType = mimeType ?? 'application/octet-stream';
+
+    // Presign → PUT bytes → commit. NOTE: this Dio's baseUrl already carries the
+    // `/v1` prefix, so these are relative resource paths ('/uploads/...'), not
+    // '/v1/uploads/...'.
+    final init = await _dio.postMap('/uploads/init', {
+      'subject_id': subjectId,
+      'name': name,
+      'kind': kind,
+      'mime_type': contentType,
+      'size_bytes': bytes.length,
+    });
+    final fileId = init['file_id'] as String;
+    final uploadUrl = init['upload_url'] as String;
+
+    // PUT straight to storage with a bare Dio so the signed URL isn't sent the
+    // API client's base URL or Authorization header.
+    await Dio().put<void>(
+      uploadUrl,
+      data: Stream<List<int>>.fromIterable([bytes]),
+      options: Options(
+        headers: <String, dynamic>{
+          Headers.contentTypeHeader: contentType,
+          Headers.contentLengthHeader: bytes.length,
+        },
+      ),
+    );
+
+    final commit = await _dio.postMap('/uploads/$fileId/commit');
+    return (commit['file_id'] as String?) ?? fileId;
+  }
+
+  @override
+  Future<List<SubjectFileRef>> files(String subjectId) async {
+    final body = await _dio.getMap('/subjects/$subjectId');
+    return listOf(body, 'files')
+        .map((j) => (
+              id: j['id'] as String? ?? '',
+              name: j['name'] as String? ?? 'File',
+              sizeLabel: j['size_label'] as String? ?? '',
+              kind: j['kind'] as String? ?? '',
+            ))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<String> fileDownloadUrl(String fileId) async {
+    final body = await _dio.getMap('/files/$fileId/download');
+    return body['url'] as String? ?? '';
+  }
+
+  @override
+  Future<void> deleteFile(String fileId) => _dio.deleteMap('/files/$fileId');
 
   SubjectDto _subjToDto(Map<String, dynamic> j) => SubjectDto(
         id: j['id'] as String? ?? '',

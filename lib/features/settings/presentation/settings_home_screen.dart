@@ -13,6 +13,7 @@ import '../../../core/utils/hex_color.dart';
 import '../../../core/utils/launch_external.dart';
 import '../../../data/auth/auth_repository.dart';
 import '../../../data/models/tag.dart';
+import '../../../data/models/user_profile.dart';
 import '../../../data/repositories/tags_repository.dart';
 import '../../../shared/widgets/settings_row.dart';
 import '../providers/prism_settings_provider.dart';
@@ -52,7 +53,7 @@ class SettingsHomeScreen extends ConsumerWidget {
             decoration: BoxDecoration(color: colors.surface, borderRadius: BorderRadius.circular(18), boxShadow: colors.cardShadow),
             child: Row(
               children: [
-                _Avatar(size: 46, emojiSize: 22, colors: colors),
+                _Avatar(size: 46, emojiSize: 22, colors: colors, avatarIndex: profile.avatarIndex),
                 const SizedBox(width: 13),
                 Expanded(
                   child: Column(
@@ -60,10 +61,15 @@ class SettingsHomeScreen extends ConsumerWidget {
                     children: [
                       Text(profile.name, style: AppText.sans(size: 15, weight: FontWeight.w800, color: colors.text)),
                       const SizedBox(height: 1),
-                      Text(
-                        [profile.university, profile.program].where((s) => s != null && s.isNotEmpty).join(' · '),
-                        style: AppText.sans(size: 11.5, color: colors.textMed),
-                      ),
+                      Builder(builder: (_) {
+                        // Fresh profiles have neither field; invite instead of
+                        // leaving a hollow line (the card already navigates).
+                        final detail = [profile.university, profile.program].where((s) => s != null && s.isNotEmpty).join(' · ');
+                        return Text(
+                          detail.isEmpty ? 'Add your uni and program' : detail,
+                          style: AppText.sans(size: 11.5, color: detail.isEmpty ? colors.textDim : colors.textMed),
+                        );
+                      }),
                     ],
                   ),
                 ),
@@ -99,6 +105,7 @@ class SettingsHomeScreen extends ConsumerWidget {
             SettingsRow(label: 'Notifications', icon: Icons.notifications_none, showChevron: true, onTap: () => unawaited(context.push(Routes.settingsNotif))),
             SettingsRow(label: 'Appearance', icon: Icons.wb_sunny, value: _modeLabel(mode), showChevron: true, onTap: () => unawaited(showAppearanceSheet(context))),
             SettingsRow(label: 'Prism', icon: Icons.graphic_eq, value: ref.watch(prismDefaultModeProvider), showChevron: true, onTap: () => unawaited(context.push(Routes.settingsSounds))),
+            SettingsRow(label: 'What Ada remembers', icon: Icons.psychology_outlined, showChevron: true, onTap: () => unawaited(context.push(Routes.settingsMemories))),
             SettingsRow(label: 'Calendar import', icon: Icons.calendar_today, showChevron: true, onTap: () => _comingSoon(context, 'Calendar import')),
             SettingsRow(label: 'Reminder import', icon: Icons.format_list_bulleted, showChevron: true, last: true, onTap: () => _comingSoon(context, 'Reminder import')),
           ],
@@ -117,7 +124,19 @@ class SettingsHomeScreen extends ConsumerWidget {
                 if (context.mounted) context.go(Routes.welcome);
               },
             ),
-            SettingsRow(label: 'Delete account', icon: Icons.delete_outline, danger: true, showChevron: true, last: true, onTap: () => unawaited(showDeleteAccountDialog(context))),
+            SettingsRow(
+              label: 'Delete account',
+              icon: Icons.delete_outline,
+              danger: true,
+              showChevron: true,
+              last: true,
+              onTap: () async {
+                final confirmed = await showDeleteAccountDialog(context);
+                if (confirmed != true) return;
+                await ref.read(authRepositoryProvider).deleteAccount();
+                if (context.mounted) context.go(Routes.welcome);
+              },
+            ),
           ],
         ),
         const SizedBox(height: 20),
@@ -126,8 +145,8 @@ class SettingsHomeScreen extends ConsumerWidget {
           children: [
             SettingsRow(label: 'Feedback & suggestions', icon: Icons.forum_outlined, showChevron: true, onTap: () => unawaited(context.push(Routes.settingsFeedback))),
             SettingsRow(label: 'Rate Aqademiq', icon: Icons.star_outline, showChevron: true, onTap: () => unawaited(showRateSheet(context))),
-            SettingsRow(label: 'Privacy Policy', icon: Icons.description, showChevron: true, onTap: () => unawaited(openExternal(context, Uri.parse('https://aqademiq.app/privacy')))),
-            SettingsRow(label: 'Terms of service', icon: Icons.help_outline, showChevron: true, last: true, onTap: () => unawaited(openExternal(context, Uri.parse('https://aqademiq.app/terms')))),
+            SettingsRow(label: 'Privacy Policy', icon: Icons.description, showChevron: true, onTap: () => unawaited(openExternal(context, Uri.parse('https://www.aqademiq.com/privacy-policy')))),
+            SettingsRow(label: 'Terms of service', icon: Icons.help_outline, showChevron: true, last: true, onTap: () => unawaited(openExternal(context, Uri.parse('https://www.aqademiq.com/terms-of-use')))),
           ],
         ),
       ],
@@ -136,19 +155,27 @@ class SettingsHomeScreen extends ConsumerWidget {
 }
 
 void _comingSoon(BuildContext context, String feature) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('$feature is coming soon.')),
-  );
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        content: Text("$feature isn't available yet — we'll let you know the moment it lands."),
+      ),
+    );
 }
 
 class _Avatar extends StatelessWidget {
-  const _Avatar({required this.size, required this.emojiSize, required this.colors});
+  const _Avatar({required this.size, required this.emojiSize, required this.colors, this.avatarIndex = 0});
   final double size;
   final double emojiSize;
   final AppColors colors;
+  final int avatarIndex;
 
   @override
   Widget build(BuildContext context) {
+    final emoji = kProfileAvatars[avatarIndex.clamp(0, kProfileAvatars.length - 1)];
     return Container(
       width: size,
       height: size,
@@ -157,7 +184,7 @@ class _Avatar extends StatelessWidget {
         shape: BoxShape.circle,
         gradient: RadialGradient(center: const Alignment(-0.24, -0.34), colors: [colors.accentSoft, colors.accent]),
       ),
-      child: Text('🎓', style: TextStyle(fontSize: emojiSize)),
+      child: Text(emoji, style: TextStyle(fontSize: emojiSize)),
     );
   }
 }
@@ -169,54 +196,69 @@ class _TagsCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
-    final tags = ref.watch(tagsProvider).value ?? const <Tag>[];
+    final tagsAsync = ref.watch(tagsProvider);
+    final tags = tagsAsync.value ?? const <Tag>[];
     return Container(
       padding: const EdgeInsets.fromLTRB(13, 13, 13, 14),
       decoration: BoxDecoration(color: colors.surface, borderRadius: BorderRadius.circular(18), boxShadow: colors.cardShadow),
-      child: Wrap(
-        spacing: 7,
-        runSpacing: 7,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final t in tags)
-            Container(
-              padding: const EdgeInsets.fromLTRB(10, 5, 9, 5),
-              decoration: BoxDecoration(
-                color: colors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.pill),
-                border: Border.all(color: colors.border),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(width: 7, height: 7, decoration: BoxDecoration(color: hexColor(t.color), shape: BoxShape.circle)),
-                  const SizedBox(width: 6),
-                  Text(t.label, style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.text)),
-                  const SizedBox(width: 6),
-                  GestureDetector(
-                    onTap: () => unawaited(ref.read(tagsProvider.notifier).remove(t.id)),
-                    behavior: HitTestBehavior.opaque,
-                    child: Icon(Icons.close, size: 13, color: colors.textDim),
+          // Confirmed-empty (not loading): explain the card instead of leaving
+          // the "New tag" pill stranded on its own.
+          if (tagsAsync.hasValue && tags.isEmpty) ...[
+            Text(
+              'No tags yet — add a few so Ada can tell labs from lectures.',
+              style: AppText.sans(size: 11.5, height: 1.45, color: colors.textMed),
+            ),
+            const SizedBox(height: 9),
+          ],
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (final t in tags)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(10, 5, 9, 5),
+                  decoration: BoxDecoration(
+                    color: colors.surface,
+                    borderRadius: BorderRadius.circular(AppRadius.pill),
+                    border: Border.all(color: colors.border),
                   ),
-                ],
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(width: 7, height: 7, decoration: BoxDecoration(color: hexColor(t.color), shape: BoxShape.circle)),
+                      const SizedBox(width: 6),
+                      Text(t.label, style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.text)),
+                      const SizedBox(width: 6),
+                      GestureDetector(
+                        onTap: () => unawaited(ref.read(tagsProvider.notifier).remove(t.id)),
+                        behavior: HitTestBehavior.opaque,
+                        child: Icon(Icons.close, size: 13, color: colors.textDim),
+                      ),
+                    ],
+                  ),
+                ),
+              GestureDetector(
+                onTap: onAdd,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(9, 5, 11, 5),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.pill),
+                    border: Border.all(color: colors.accent.alpha8(0x88), width: 1.5),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.add, size: 14, color: colors.accent),
+                      const SizedBox(width: 3),
+                      Text('New tag', style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.accent)),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          GestureDetector(
-            onTap: onAdd,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(9, 5, 11, 5),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(AppRadius.pill),
-                border: Border.all(color: colors.accent.alpha8(0x88), width: 1.5),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.add, size: 14, color: colors.accent),
-                  const SizedBox(width: 3),
-                  Text('New tag', style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.accent)),
-                ],
-              ),
-            ),
+            ],
           ),
         ],
       ),
