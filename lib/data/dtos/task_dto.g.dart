@@ -42,6 +42,8 @@ _TaskDto _$TaskDtoFromJson(Map<String, dynamic> json) => _TaskDto(
   title: json['title'] as String,
   tagId: json['tagId'] as String,
   date: DateTime.parse(json['date'] as String),
+  note: json['note'] as String?,
+  subjectId: json['subjectId'] as String?,
   timeOfDay: json['timeOfDay'] as String?,
   startTime: json['startTime'] == null
       ? null
@@ -63,6 +65,8 @@ Map<String, dynamic> _$TaskDtoToJson(_TaskDto instance) => <String, dynamic>{
   'title': instance.title,
   'tagId': instance.tagId,
   'date': instance.date.toIso8601String(),
+  'note': instance.note,
+  'subjectId': instance.subjectId,
   'timeOfDay': instance.timeOfDay,
   'startTime': instance.startTime?.toIso8601String(),
   'durationMin': instance.durationMin,

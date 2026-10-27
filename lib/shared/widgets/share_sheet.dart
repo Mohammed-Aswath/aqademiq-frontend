@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
 import '../../core/theme/app_text.dart';
+import '../../core/utils/referral_link.dart';
+import '../../data/repositories/referral_repository.dart';
+import '../../features/settings/providers/profile_controller.dart';
 
 /// Presents the referral / share sheet ([_ShareSheet]) over the dimmed real
 /// screen. Reused by both the Subjects section (`subj-share`) and the section 06
@@ -38,6 +42,11 @@ class _ShareSheet extends StatelessWidget {
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            // Stretch, not the default centre. An unconstrained Container in a
+            // centred Column is sized by its child, which left the gradient
+            // hero as wide as the word "Aqademiq" rather than as wide as the
+            // sheet — a tall narrow tile where the design has a broad banner.
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Center(
                 child: Container(
@@ -81,6 +90,8 @@ class _ShareSheet extends StatelessWidget {
               ),
               const SizedBox(height: 9),
               const _CodeBoxes(),
+              const SizedBox(height: 10),
+              const _ReferralCount(),
               const SizedBox(height: 15),
               const _ShareInviteButton(),
             ],
@@ -91,12 +102,13 @@ class _ShareSheet extends StatelessWidget {
   }
 }
 
-class _InviteHeroCard extends StatelessWidget {
+class _InviteHeroCard extends ConsumerWidget {
   const _InviteHeroCard();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
+    final name = ref.watch(profileControllerProvider).name.trim();
     return Container(
       margin: const EdgeInsets.only(bottom: 13),
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17),
@@ -133,7 +145,7 @@ class _InviteHeroCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Invite by Ridhwan Ahamed',
+            name.isEmpty ? 'Invite a friend' : 'Invite by $name',
             style: AppText.sans(
               size: 11,
               weight: FontWeight.w700,
@@ -146,20 +158,56 @@ class _InviteHeroCard extends StatelessWidget {
   }
 }
 
-class _CodeBoxes extends StatelessWidget {
+class _CodeBoxes extends ConsumerWidget {
   const _CodeBoxes();
 
   @override
-  Widget build(BuildContext context) {
-    const code = ['A', 'D', 'A', '4', '2'];
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        for (var i = 0; i < code.length; i++) ...[
-          if (i > 0) const SizedBox(width: 7),
-          _CodeCell(char: code[i]),
+  Widget build(BuildContext context, WidgetRef ref) {
+    // The user's real, unique code (falls back to a dashed placeholder while it
+    // loads). Rendered dynamically so any code length fits.
+    final code = ref.watch(referralCodeProvider).value ?? '';
+    final chars = code.isEmpty ? List.filled(5, '·') : code.split('');
+    // Scaled down to fit rather than laid out at a fixed size.
+    //
+    // The cells are 38pt with 7pt between them, so eight characters want 353pt
+    // against the 357pt this sheet actually has on a 393pt phone — and lose
+    // outright on a 375pt one, which is where the last character was landing
+    // off the right edge. The count was already dynamic; the width was not.
+    // scaleDown only ever shrinks, so shorter codes still render full size.
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (var i = 0; i < chars.length; i++) ...[
+            if (i > 0) const SizedBox(width: 7),
+            _CodeCell(char: chars[i]),
+          ],
         ],
-      ],
+      ),
+    );
+  }
+}
+
+/// How many people joined with this code, and the reward balance it earned.
+/// Nothing while it loads or if it fails: the code above still works.
+class _ReferralCount extends ConsumerWidget {
+  const _ReferralCount();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final summary = ref.watch(referralSummaryProvider).value;
+    if (summary == null) return const SizedBox(height: 16);
+    final n = summary.redemptions;
+    final text = n == 0
+        ? 'Nobody has joined with your code yet'
+        : '${n == 1 ? '1 friend has' : '$n friends have'} joined with your code'
+            ' · ${summary.balance} reward points';
+    return Text(
+      text,
+      textAlign: TextAlign.center,
+      style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.textMed),
     );
   }
 }
@@ -189,18 +237,39 @@ class _CodeCell extends StatelessWidget {
   }
 }
 
-class _ShareInviteButton extends StatelessWidget {
+class _ShareInviteButton extends ConsumerWidget {
   const _ShareInviteButton();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
     return GestureDetector(
       onTap: () async {
+        final code = ref.read(referralCodeProvider).value ?? '';
+        // The code stays in the text as well as the link: the link only opens
+        // the app once the domain-association files are hosted, and until then
+        // the readable code is still the thing that works.
+        final codePart = code.isEmpty ? '' : ' Use my referral code $code.';
+        // iPad presents the share sheet as a POPOVER, and UIKit requires an
+        // anchor rect for it. Without one the presentation fails on iPad while
+        // working fine on iPhone (where it is a modal sheet) — and because the
+        // failure happens in UIKit rather than Dart, the await below can never
+        // return, leaving the sheet looking frozen. iPhone ignores the rect.
+        final box = context.findRenderObject() as RenderBox?;
+        final screen = MediaQuery.sizeOf(context);
+        final origin = (box != null && box.hasSize)
+            ? box.localToGlobal(Offset.zero) & box.size
+            : Rect.fromCenter(
+                center: Offset(screen.width / 2, screen.height / 2),
+                width: 1,
+                height: 1,
+              );
         await SharePlus.instance.share(
           ShareParams(
-            text: 'Join me on Aqademiq — my focus sanctuary. Use my referral code ADA42 → https://aqademiq.app',
+            text: 'Join me on Aqademiq — my focus sanctuary.$codePart '
+                '${referralLink(code)}',
             subject: 'Join me on Aqademiq',
+            sharePositionOrigin: origin,
           ),
         );
         if (context.mounted) Navigator.of(context).pop();

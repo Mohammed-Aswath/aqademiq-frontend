@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../../core/theme/app_spacing.dart';
 import '../../../../core/theme/app_text.dart';
+import '../../../../services/haptics/haptics_service.dart';
 
 /// Duration presets shown in the picker grid, paired with the minute value
 /// each cell commits when tapped (`plan-pick-duration`).
@@ -16,20 +18,18 @@ const _presets = <_Preset>[
   _Preset('1.5 hr', 90),
 ];
 
-/// The minute value that renders in the active state by default.
-const _activeMinutes = 30;
-
-/// Presents the `plan-pick-duration` bottom sheet. Tapping a preset cell returns
+/// Presents the `plan-pick-duration` bottom sheet. [current] is the currently
+/// selected duration so its preset renders active. Tapping a preset cell returns
 /// its minute value; "Custom duration → Set" opens [_showCustomDuration] and
 /// returns the fine-tuned value from there. Returns `null` if dismissed.
-Future<int?> showDurationPicker(BuildContext context) {
+Future<int?> showDurationPicker(BuildContext context, {int current = 30}) {
   return showModalBottomSheet<int>(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0x4C140F1C),
-    builder: (_) => const _DurationSheet(),
+    builder: (_) => _DurationSheet(current: current),
   );
 }
 
@@ -40,7 +40,9 @@ class _Preset {
 }
 
 class _DurationSheet extends StatelessWidget {
-  const _DurationSheet();
+  const _DurationSheet({required this.current});
+
+  final int current;
 
   @override
   Widget build(BuildContext context) {
@@ -105,7 +107,7 @@ class _DurationSheet extends StatelessWidget {
                   for (final preset in _presets)
                     _PresetCell(
                       preset: preset,
-                      active: preset.minutes == _activeMinutes,
+                      active: preset.minutes == current,
                       onTap: () => Navigator.of(context).pop(preset.minutes),
                     ),
                 ],
@@ -235,20 +237,25 @@ Future<int?> _showCustomDuration(BuildContext context) {
   );
 }
 
-class _CustomDurationDialog extends StatefulWidget {
+class _CustomDurationDialog extends ConsumerStatefulWidget {
   const _CustomDurationDialog();
 
   @override
-  State<_CustomDurationDialog> createState() => _CustomDurationDialogState();
+  ConsumerState<_CustomDurationDialog> createState() =>
+      _CustomDurationDialogState();
 }
 
-class _CustomDurationDialogState extends State<_CustomDurationDialog> {
+class _CustomDurationDialogState extends ConsumerState<_CustomDurationDialog> {
   static const _min = 5;
   static const _max = 120;
   int _minutes = 50;
 
-  void _setMinutes(int value) {
-    setState(() => _minutes = value.clamp(_min, _max));
+  /// [detent] is true only for the slider — see the note in
+  /// `focus_duration_dialog.dart`; Pickers get one event (§7) and this is it.
+  void _setMinutes(int value, {bool detent = false}) {
+    final next = value.clamp(_min, _max);
+    if (detent && next != _minutes) ref.read(hapticsProvider).sliderStop();
+    setState(() => _minutes = next);
   }
 
   @override
@@ -344,8 +351,10 @@ class _CustomDurationDialogState extends State<_CustomDurationDialog> {
                 padding: const EdgeInsets.only(bottom: 14),
                 child: _DurationSlider(
                   fraction: fraction,
-                  onChanged: (value) =>
-                      _setMinutes((_min + value * (_max - _min)).round()),
+                  onChanged: (value) => _setMinutes(
+                    (_min + value * (_max - _min)).round(),
+                    detent: true,
+                  ),
                 ),
               ),
               Row(

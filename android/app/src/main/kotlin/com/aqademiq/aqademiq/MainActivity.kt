@@ -1,5 +1,73 @@
 package com.aqademiq.aqademiq
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity()
+class MainActivity : FlutterActivity() {
+
+    /**
+     * Attach the ambient channel as soon as there is an engine to talk to.
+     *
+     * This is also where a Freeze pressed while the app was not running gets
+     * replayed: the press is parked in shared preferences by [AmbientBridge]
+     * and drained here, so it changes the session rather than evaporating.
+     */
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        AmbientBridge.attach(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AmbientBridge.CHANNEL),
+            applicationContext,
+        )
+        // A widget tapped while the app was closed brought us here, so the link
+        // is already on the launch intent and would otherwise be missed.
+        AmbientBridge.routeFrom(intent)
+
+        // The 23 haptic patterns. Flutter's own HapticFeedback takes no
+        // parameters, so intensity, duration and multi-beat timing all arrive
+        // through here (lib/services/haptics/haptic_driver.dart).
+        HapticsBridge.attach(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, HapticsBridge.CHANNEL),
+            applicationContext,
+        )
+
+        // Settings → Calendar import: reads the phone's calendars (read-only).
+        // A plugin rather than an attached object because the permission
+        // prompt needs the activity's result callback.
+        flutterEngine.plugins.add(DeviceImportPlugin())
+
+        // A permission the student refused can only be re-enabled from the app's
+        // page in system Settings. iOS reaches it through a URL; Android has none,
+        // so Dart asks for it here (lib/services/app_settings.dart).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "aqademiq/app_settings")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "open") {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", packageName, null),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    result.success(null)
+                } else {
+                    result.notImplemented()
+                }
+            }
+    }
+
+    /** A widget tapped while the app was already open (singleTop). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        AmbientBridge.routeFrom(intent)
+    }
+
+    override fun onDestroy() {
+        AmbientBridge.detach()
+        HapticsBridge.detach()
+        super.onDestroy()
+    }
+}

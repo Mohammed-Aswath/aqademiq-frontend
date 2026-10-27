@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text.dart';
+import '../../providers/plan_ui_providers.dart';
 
 /// The action the user picked from the Plan overflow (`···`) popover.
 enum PlanMenuResult {
@@ -22,17 +23,29 @@ enum PlanMenuResult {
 /// 220-wide white popover anchored to the top-right, dropped from the `···`
 /// button. The "Grouping options" header expands to reveal List / Timeline.
 ///
+/// [currentGrouping] drives which option shows the checkmark (must match the
+/// live [planViewModeProvider] value — previously Timeline was hardcoded).
+///
 /// Returns the chosen [PlanMenuResult], or `null` when dismissed.
-Future<PlanMenuResult?> showPlanMenu(BuildContext context) {
+Future<PlanMenuResult?> showPlanMenu(
+  BuildContext context, {
+  PlanViewMode currentGrouping = PlanViewMode.timeline,
+  bool canLogMood = true,
+}) {
   return showDialog<PlanMenuResult>(
     context: context,
     barrierColor: const Color(0x2E140F1C),
-    builder: (_) => const _PlanMenuPopover(),
+    builder: (_) => _PlanMenuPopover(currentGrouping: currentGrouping, canLogMood: canLogMood),
   );
 }
 
 class _PlanMenuPopover extends StatefulWidget {
-  const _PlanMenuPopover();
+  const _PlanMenuPopover({required this.currentGrouping, required this.canLogMood});
+
+  final PlanViewMode currentGrouping;
+
+  /// False while the planner is showing a day that has not happened yet.
+  final bool canLogMood;
 
   @override
   State<_PlanMenuPopover> createState() => _PlanMenuPopoverState();
@@ -74,12 +87,18 @@ class _PlanMenuPopoverState extends State<_PlanMenuPopover> {
                   onTap: () =>
                       Navigator.of(context).pop(PlanMenuResult.reschedule),
                 ),
-                _MenuRow(
-                  icon: Icons.favorite_border,
-                  label: 'Log mood',
-                  onTap: () =>
-                      Navigator.of(context).pop(PlanMenuResult.logMood),
-                ),
+                // Hidden while the planner is showing a future day. This
+                // logs against the *selected* date, so on a Thursday viewing
+                // Saturday it wrote a Saturday mood — a day that has not
+                // happened, which then draws a tinted band in the weekly
+                // report and is silently overwritten by the real check-in.
+                if (widget.canLogMood)
+                  _MenuRow(
+                    icon: Icons.favorite_border,
+                    label: 'Log mood',
+                    onTap: () =>
+                        Navigator.of(context).pop(PlanMenuResult.logMood),
+                  ),
                 _GroupingHeader(
                   open: _groupingOpen,
                   onTap: () =>
@@ -94,14 +113,14 @@ class _PlanMenuPopoverState extends State<_PlanMenuPopover> {
                   _GroupingOption(
                     icon: Icons.format_list_bulleted,
                     label: 'List',
-                    selected: false,
+                    selected: widget.currentGrouping == PlanViewMode.list,
                     onTap: () => Navigator.of(context)
                         .pop(PlanMenuResult.groupingList),
                   ),
                   _GroupingOption(
                     icon: Icons.view_agenda,
                     label: 'Timeline',
-                    selected: true,
+                    selected: widget.currentGrouping == PlanViewMode.timeline,
                     onTap: () => Navigator.of(context)
                         .pop(PlanMenuResult.groupingTimeline),
                   ),
@@ -209,10 +228,12 @@ class _GroupingOption extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
         child: Row(
           children: [
-            if (selected) ...[
-              Icon(Icons.check, size: 18, color: colors.accent),
-              const SizedBox(width: 12),
-            ],
+            SizedBox(
+              width: 30,
+              child: selected
+                  ? Icon(Icons.check, size: 18, color: colors.accent)
+                  : null,
+            ),
             Icon(icon, size: 19, color: colors.text),
             const SizedBox(width: 12),
             Text(

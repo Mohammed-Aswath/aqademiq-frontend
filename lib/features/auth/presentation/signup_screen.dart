@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
+import '../../../data/auth/auth_repository.dart';
 import '../../../shared/widgets/app_text_field.dart';
 import '../../../shared/widgets/circle_back_button.dart';
 import '../../../shared/widgets/primary_button.dart';
@@ -21,7 +22,7 @@ class SignupScreen extends ConsumerStatefulWidget {
 }
 
 class _SignupScreenState extends ConsumerState<SignupScreen> {
-  final _email = TextEditingController(text: 'ridhwan@bits.ac.in');
+  final _email = TextEditingController();
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   bool _obscure1 = true;
@@ -41,7 +42,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           email: _email.text,
           password: _password.text,
         );
-    if (ok && mounted) unawaited(context.push(Routes.verify));
+    if (!mounted) return;
+    if (ok) {
+      unawaited(context.push(Routes.verify));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
   }
 
   @override
@@ -66,7 +77,14 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               const SizedBox(height: 16),
               Text('Create account', style: AppText.sans(size: 28, weight: FontWeight.w800, color: colors.text)),
               const SizedBox(height: 4),
-              Text('Save your streak, grades & plan', style: AppText.sans(size: 12, color: colors.textMed)),
+              Text(
+                // A guest's account is upgraded in place, so this is a promise
+                // the sign-up can keep.
+                ref.watch(isGuestProvider)
+                    ? "Everything you've made as a guest comes with you"
+                    : 'Save your streak, grades & plan',
+                style: AppText.sans(size: 12, color: colors.textMed),
+              ),
               const SizedBox(height: 22),
               const FieldLabel('Email'),
               AppTextField(controller: _email, keyboardType: TextInputType.emailAddress),

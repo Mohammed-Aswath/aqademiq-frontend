@@ -14,7 +14,24 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$FocusSession {
 
- String get id; int get durationMin; String? get taskId; String? get prismMode; int get elapsedSec; FocusStatus get status; DateTime? get startedAt; DateTime? get completedAt; int? get endMood;
+ String get id; int get durationMin; String? get taskId; String? get prismMode; int get elapsedSec; FocusStatus get status; DateTime? get startedAt; DateTime? get completedAt; int? get endMood;/// Server-assigned experiment arm. When true the soundscape stays silent
+/// for this session — the client is told, never asked (see §4.3 holdout).
+ bool get controlArm;/// The instant this session is due to finish.
+///
+/// In-app the timer counts [elapsedSec] up, but every *ambient* surface
+/// counts down from an absolute instant that the OS renders for free — a
+/// Live Activity, a Dynamic Island, an Android chronometer. None of them can
+/// be driven by a per-second push, so they need the end, not the elapsed.
+///
+/// Freezing pushes this forward by however long the session was held (see
+/// [frozenAt]), which is what keeps the two clocks agreeing after a resume.
+ DateTime? get endsAt;/// When the session was frozen, or null while it is running.
+///
+/// Held time must not be spent time: on resume the gap since this instant is
+/// added to [endsAt]. It also marks the countdown as stale — a system-drawn
+/// timer cannot be paused, so a frozen surface shows [remaining] as static
+/// text instead of a live clock.
+ DateTime? get frozenAt;
 /// Create a copy of FocusSession
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -25,16 +42,16 @@ $FocusSessionCopyWith<FocusSession> get copyWith => _$FocusSessionCopyWithImpl<F
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is FocusSession&&(identical(other.id, id) || other.id == id)&&(identical(other.durationMin, durationMin) || other.durationMin == durationMin)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.prismMode, prismMode) || other.prismMode == prismMode)&&(identical(other.elapsedSec, elapsedSec) || other.elapsedSec == elapsedSec)&&(identical(other.status, status) || other.status == status)&&(identical(other.startedAt, startedAt) || other.startedAt == startedAt)&&(identical(other.completedAt, completedAt) || other.completedAt == completedAt)&&(identical(other.endMood, endMood) || other.endMood == endMood));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is FocusSession&&(identical(other.id, id) || other.id == id)&&(identical(other.durationMin, durationMin) || other.durationMin == durationMin)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.prismMode, prismMode) || other.prismMode == prismMode)&&(identical(other.elapsedSec, elapsedSec) || other.elapsedSec == elapsedSec)&&(identical(other.status, status) || other.status == status)&&(identical(other.startedAt, startedAt) || other.startedAt == startedAt)&&(identical(other.completedAt, completedAt) || other.completedAt == completedAt)&&(identical(other.endMood, endMood) || other.endMood == endMood)&&(identical(other.controlArm, controlArm) || other.controlArm == controlArm)&&(identical(other.endsAt, endsAt) || other.endsAt == endsAt)&&(identical(other.frozenAt, frozenAt) || other.frozenAt == frozenAt));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,durationMin,taskId,prismMode,elapsedSec,status,startedAt,completedAt,endMood);
+int get hashCode => Object.hash(runtimeType,id,durationMin,taskId,prismMode,elapsedSec,status,startedAt,completedAt,endMood,controlArm,endsAt,frozenAt);
 
 @override
 String toString() {
-  return 'FocusSession(id: $id, durationMin: $durationMin, taskId: $taskId, prismMode: $prismMode, elapsedSec: $elapsedSec, status: $status, startedAt: $startedAt, completedAt: $completedAt, endMood: $endMood)';
+  return 'FocusSession(id: $id, durationMin: $durationMin, taskId: $taskId, prismMode: $prismMode, elapsedSec: $elapsedSec, status: $status, startedAt: $startedAt, completedAt: $completedAt, endMood: $endMood, controlArm: $controlArm, endsAt: $endsAt, frozenAt: $frozenAt)';
 }
 
 
@@ -45,7 +62,7 @@ abstract mixin class $FocusSessionCopyWith<$Res>  {
   factory $FocusSessionCopyWith(FocusSession value, $Res Function(FocusSession) _then) = _$FocusSessionCopyWithImpl;
 @useResult
 $Res call({
- String id, int durationMin, String? taskId, String? prismMode, int elapsedSec, FocusStatus status, DateTime? startedAt, DateTime? completedAt, int? endMood
+ String id, int durationMin, String? taskId, String? prismMode, int elapsedSec, FocusStatus status, DateTime? startedAt, DateTime? completedAt, int? endMood, bool controlArm, DateTime? endsAt, DateTime? frozenAt
 });
 
 
@@ -62,7 +79,7 @@ class _$FocusSessionCopyWithImpl<$Res>
 
 /// Create a copy of FocusSession
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? durationMin = null,Object? taskId = freezed,Object? prismMode = freezed,Object? elapsedSec = null,Object? status = null,Object? startedAt = freezed,Object? completedAt = freezed,Object? endMood = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? durationMin = null,Object? taskId = freezed,Object? prismMode = freezed,Object? elapsedSec = null,Object? status = null,Object? startedAt = freezed,Object? completedAt = freezed,Object? endMood = freezed,Object? controlArm = null,Object? endsAt = freezed,Object? frozenAt = freezed,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,durationMin: null == durationMin ? _self.durationMin : durationMin // ignore: cast_nullable_to_non_nullable
@@ -73,7 +90,10 @@ as int,status: null == status ? _self.status : status // ignore: cast_nullable_t
 as FocusStatus,startedAt: freezed == startedAt ? _self.startedAt : startedAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,completedAt: freezed == completedAt ? _self.completedAt : completedAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,endMood: freezed == endMood ? _self.endMood : endMood // ignore: cast_nullable_to_non_nullable
-as int?,
+as int?,controlArm: null == controlArm ? _self.controlArm : controlArm // ignore: cast_nullable_to_non_nullable
+as bool,endsAt: freezed == endsAt ? _self.endsAt : endsAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,frozenAt: freezed == frozenAt ? _self.frozenAt : frozenAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,
   ));
 }
 
@@ -158,10 +178,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood,  bool controlArm,  DateTime? endsAt,  DateTime? frozenAt)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _FocusSession() when $default != null:
-return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood);case _:
+return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood,_that.controlArm,_that.endsAt,_that.frozenAt);case _:
   return orElse();
 
 }
@@ -179,10 +199,10 @@ return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.el
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood,  bool controlArm,  DateTime? endsAt,  DateTime? frozenAt)  $default,) {final _that = this;
 switch (_that) {
 case _FocusSession():
-return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood);case _:
+return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood,_that.controlArm,_that.endsAt,_that.frozenAt);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -199,10 +219,10 @@ return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.el
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  int durationMin,  String? taskId,  String? prismMode,  int elapsedSec,  FocusStatus status,  DateTime? startedAt,  DateTime? completedAt,  int? endMood,  bool controlArm,  DateTime? endsAt,  DateTime? frozenAt)?  $default,) {final _that = this;
 switch (_that) {
 case _FocusSession() when $default != null:
-return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood);case _:
+return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.elapsedSec,_that.status,_that.startedAt,_that.completedAt,_that.endMood,_that.controlArm,_that.endsAt,_that.frozenAt);case _:
   return null;
 
 }
@@ -214,7 +234,7 @@ return $default(_that.id,_that.durationMin,_that.taskId,_that.prismMode,_that.el
 
 
 class _FocusSession extends FocusSession {
-  const _FocusSession({required this.id, required this.durationMin, this.taskId, this.prismMode, this.elapsedSec = 0, this.status = FocusStatus.idle, this.startedAt, this.completedAt, this.endMood}): super._();
+  const _FocusSession({required this.id, required this.durationMin, this.taskId, this.prismMode, this.elapsedSec = 0, this.status = FocusStatus.idle, this.startedAt, this.completedAt, this.endMood, this.controlArm = false, this.endsAt, this.frozenAt}): super._();
   
 
 @override final  String id;
@@ -226,6 +246,26 @@ class _FocusSession extends FocusSession {
 @override final  DateTime? startedAt;
 @override final  DateTime? completedAt;
 @override final  int? endMood;
+/// Server-assigned experiment arm. When true the soundscape stays silent
+/// for this session — the client is told, never asked (see §4.3 holdout).
+@override@JsonKey() final  bool controlArm;
+/// The instant this session is due to finish.
+///
+/// In-app the timer counts [elapsedSec] up, but every *ambient* surface
+/// counts down from an absolute instant that the OS renders for free — a
+/// Live Activity, a Dynamic Island, an Android chronometer. None of them can
+/// be driven by a per-second push, so they need the end, not the elapsed.
+///
+/// Freezing pushes this forward by however long the session was held (see
+/// [frozenAt]), which is what keeps the two clocks agreeing after a resume.
+@override final  DateTime? endsAt;
+/// When the session was frozen, or null while it is running.
+///
+/// Held time must not be spent time: on resume the gap since this instant is
+/// added to [endsAt]. It also marks the countdown as stale — a system-drawn
+/// timer cannot be paused, so a frozen surface shows [remaining] as static
+/// text instead of a live clock.
+@override final  DateTime? frozenAt;
 
 /// Create a copy of FocusSession
 /// with the given fields replaced by the non-null parameter values.
@@ -237,16 +277,16 @@ _$FocusSessionCopyWith<_FocusSession> get copyWith => __$FocusSessionCopyWithImp
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _FocusSession&&(identical(other.id, id) || other.id == id)&&(identical(other.durationMin, durationMin) || other.durationMin == durationMin)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.prismMode, prismMode) || other.prismMode == prismMode)&&(identical(other.elapsedSec, elapsedSec) || other.elapsedSec == elapsedSec)&&(identical(other.status, status) || other.status == status)&&(identical(other.startedAt, startedAt) || other.startedAt == startedAt)&&(identical(other.completedAt, completedAt) || other.completedAt == completedAt)&&(identical(other.endMood, endMood) || other.endMood == endMood));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _FocusSession&&(identical(other.id, id) || other.id == id)&&(identical(other.durationMin, durationMin) || other.durationMin == durationMin)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.prismMode, prismMode) || other.prismMode == prismMode)&&(identical(other.elapsedSec, elapsedSec) || other.elapsedSec == elapsedSec)&&(identical(other.status, status) || other.status == status)&&(identical(other.startedAt, startedAt) || other.startedAt == startedAt)&&(identical(other.completedAt, completedAt) || other.completedAt == completedAt)&&(identical(other.endMood, endMood) || other.endMood == endMood)&&(identical(other.controlArm, controlArm) || other.controlArm == controlArm)&&(identical(other.endsAt, endsAt) || other.endsAt == endsAt)&&(identical(other.frozenAt, frozenAt) || other.frozenAt == frozenAt));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,durationMin,taskId,prismMode,elapsedSec,status,startedAt,completedAt,endMood);
+int get hashCode => Object.hash(runtimeType,id,durationMin,taskId,prismMode,elapsedSec,status,startedAt,completedAt,endMood,controlArm,endsAt,frozenAt);
 
 @override
 String toString() {
-  return 'FocusSession(id: $id, durationMin: $durationMin, taskId: $taskId, prismMode: $prismMode, elapsedSec: $elapsedSec, status: $status, startedAt: $startedAt, completedAt: $completedAt, endMood: $endMood)';
+  return 'FocusSession(id: $id, durationMin: $durationMin, taskId: $taskId, prismMode: $prismMode, elapsedSec: $elapsedSec, status: $status, startedAt: $startedAt, completedAt: $completedAt, endMood: $endMood, controlArm: $controlArm, endsAt: $endsAt, frozenAt: $frozenAt)';
 }
 
 
@@ -257,7 +297,7 @@ abstract mixin class _$FocusSessionCopyWith<$Res> implements $FocusSessionCopyWi
   factory _$FocusSessionCopyWith(_FocusSession value, $Res Function(_FocusSession) _then) = __$FocusSessionCopyWithImpl;
 @override @useResult
 $Res call({
- String id, int durationMin, String? taskId, String? prismMode, int elapsedSec, FocusStatus status, DateTime? startedAt, DateTime? completedAt, int? endMood
+ String id, int durationMin, String? taskId, String? prismMode, int elapsedSec, FocusStatus status, DateTime? startedAt, DateTime? completedAt, int? endMood, bool controlArm, DateTime? endsAt, DateTime? frozenAt
 });
 
 
@@ -274,7 +314,7 @@ class __$FocusSessionCopyWithImpl<$Res>
 
 /// Create a copy of FocusSession
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? durationMin = null,Object? taskId = freezed,Object? prismMode = freezed,Object? elapsedSec = null,Object? status = null,Object? startedAt = freezed,Object? completedAt = freezed,Object? endMood = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? durationMin = null,Object? taskId = freezed,Object? prismMode = freezed,Object? elapsedSec = null,Object? status = null,Object? startedAt = freezed,Object? completedAt = freezed,Object? endMood = freezed,Object? controlArm = null,Object? endsAt = freezed,Object? frozenAt = freezed,}) {
   return _then(_FocusSession(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,durationMin: null == durationMin ? _self.durationMin : durationMin // ignore: cast_nullable_to_non_nullable
@@ -285,7 +325,10 @@ as int,status: null == status ? _self.status : status // ignore: cast_nullable_t
 as FocusStatus,startedAt: freezed == startedAt ? _self.startedAt : startedAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,completedAt: freezed == completedAt ? _self.completedAt : completedAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,endMood: freezed == endMood ? _self.endMood : endMood // ignore: cast_nullable_to_non_nullable
-as int?,
+as int?,controlArm: null == controlArm ? _self.controlArm : controlArm // ignore: cast_nullable_to_non_nullable
+as bool,endsAt: freezed == endsAt ? _self.endsAt : endsAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,frozenAt: freezed == frozenAt ? _self.frozenAt : frozenAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,
   ));
 }
 

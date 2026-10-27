@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -46,6 +47,9 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
   late final TextEditingController _nameController;
   late final TextEditingController _codeController;
   late final TextEditingController _professorController;
+  late final TextEditingController _creditsController;
+  // The GPA / % target value (e.g. "3.7" or "85"). Letter mode uses _gradeIdx.
+  late final TextEditingController _targetController;
 
   int _formatIdx = 0;
   int _gradeIdx = 1;
@@ -61,15 +65,32 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
     _codeController = TextEditingController(text: existing?.code ?? '');
     _professorController =
         TextEditingController(text: existing?.professor ?? '');
+    _creditsController =
+        TextEditingController(text: existing?.credits?.toString() ?? '');
+    // Recover the target-grade mode + value from the stored string. The backend
+    // keeps one free-form target_grade: a letter ("A"), a GPA ("3.7"), or a
+    // percentage ("85%"). Detect which so editing lands on the right tab.
+    var targetText = '';
     if (existing != null) {
-      final gradeIdx = _letterGrades.indexOf(existing.targetGrade ?? '');
-      if (gradeIdx >= 0) _gradeIdx = gradeIdx;
+      final g = existing.targetGrade?.trim() ?? '';
+      final letterIdx = _letterGrades.indexOf(g);
+      if (g.endsWith('%')) {
+        _formatIdx = 2;
+        targetText = g.substring(0, g.length - 1).trim();
+      } else if (letterIdx >= 0) {
+        _formatIdx = 0;
+        _gradeIdx = letterIdx;
+      } else if (g.isNotEmpty && double.tryParse(g) != null) {
+        _formatIdx = 1;
+        targetText = g;
+      }
       final existingHex = hexFromColor(hexColor(existing.color));
       final colorIdx =
           _swatches.indexWhere((c) => hexFromColor(c) == existingHex);
       if (colorIdx >= 0) _colorIdx = colorIdx;
       _moodIdx = (existing.mood ?? 1).clamp(0, 4);
     }
+    _targetController = TextEditingController(text: targetText);
   }
 
   @override
@@ -77,10 +98,22 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
     _nameController.dispose();
     _codeController.dispose();
     _professorController.dispose();
+    _creditsController.dispose();
+    _targetController.dispose();
     super.dispose();
   }
 
   bool get _isEdit => widget.existing != null;
+
+  /// The target grade to persist, encoded into the single target_grade string:
+  /// a letter for Letter mode, the raw number for GPA, or `n%` for percent.
+  /// Empty GPA/% input saves nothing (no target set).
+  String? _targetGradeValue() {
+    if (_formatIdx == 0) return _letterGrades[_gradeIdx];
+    final v = _targetController.text.trim();
+    if (v.isEmpty) return null;
+    return _formatIdx == 2 ? '$v%' : v;
+  }
 
   Future<void> _save() async {
     final name = _nameController.text.trim();
@@ -98,6 +131,8 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
         (ref.read(semestersProvider).value?.firstOrNull?.id ?? '');
     final code = _codeController.text.trim();
     final professor = _professorController.text.trim();
+    final creditsText = _creditsController.text.trim();
+    final credits = creditsText.isEmpty ? null : int.tryParse(creditsText);
 
     final subject = (existing ??
             const Subject(id: '', name: '', color: '', semesterId: ''))
@@ -106,8 +141,9 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
       color: hexFromColor(_swatches[_colorIdx]),
       semesterId: semesterId,
       code: code.isEmpty ? null : code,
-      targetGrade: _formatIdx == 0 ? _letterGrades[_gradeIdx] : null,
+      targetGrade: _targetGradeValue(),
       professor: professor.isEmpty ? null : professor,
+      credits: credits,
       mood: _moodIdx,
     );
 
@@ -289,24 +325,14 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
 
   // --- Body fields ----------------------------------------------------------
 
-  /// A white body field shell: surface bg, radius 12, card shadow.
-  Widget _bodyField(AppColors colors, {required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.cellSmall),
-        boxShadow: colors.cardShadow,
-      ),
-      child: child,
-    );
-  }
-
-  /// An editable body field matching [_bodyField]'s look.
+  /// A white editable body field: surface bg, radius 12, card shadow. Pass
+  /// [keyboardType]/[inputFormatters] for numeric fields (e.g. credits).
   Widget _bodyTextField(
     AppColors colors, {
     required TextEditingController controller,
     required String hint,
+    TextInputType? keyboardType,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -316,6 +342,8 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
       ),
       child: TextField(
         controller: controller,
+        keyboardType: keyboardType,
+        inputFormatters: inputFormatters,
         cursorColor: colors.accent,
         style: AppText.sans(
           size: 12.5,
@@ -361,29 +389,15 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildCreditsLabel(colors),
-              _bodyField(
+              _bodyTextField(
                 colors,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Add',
-                      style: AppText.sans(
-                        size: 12.5,
-                        weight: FontWeight.w700,
-                        color: colors.textDim,
-                      ),
-                    ),
-                    Text(
-                      '＋',
-                      style: AppText.sans(
-                        size: 12.5,
-                        weight: FontWeight.w700,
-                        color: colors.text,
-                      ),
-                    ),
-                  ],
-                ),
+                controller: _creditsController,
+                hint: 'e.g. 3',
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(2),
+                ],
               ),
             ],
           ),
@@ -494,10 +508,13 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
   }
 
   /// GPA / % target value input (FRAMES `subj-add-gpa` / `subj-add-pct`).
+  ///
+  /// This used to be a static Text showing a hardcoded "3.7" / "85" — so GPA and
+  /// percentage targets couldn't be typed or saved at all. It's now a real field.
   Widget _buildValueInput(AppColors colors) {
     final isGpa = _formatIdx == 1;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       decoration: BoxDecoration(
         color: colors.surface,
         borderRadius: BorderRadius.circular(12),
@@ -505,12 +522,27 @@ class _SubjectFormSheetState extends ConsumerState<SubjectFormSheet> {
         border: Border.all(color: colors.accent, width: 1.5),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.baseline,
-        textBaseline: TextBaseline.alphabetic,
         children: [
-          Text(isGpa ? '3.7' : '85', style: AppText.sans(size: 19, weight: FontWeight.w800, letterSpacing: -0.5, color: colors.text)),
-          if (!isGpa) Text('%', style: AppText.sans(size: 14, color: colors.textMed)),
-          const Spacer(),
+          Expanded(
+            child: TextField(
+              controller: _targetController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp('[0-9.]')),
+              ],
+              enabled: !_saving,
+              style: AppText.sans(size: 19, weight: FontWeight.w800, letterSpacing: -0.5, color: colors.text),
+              decoration: InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                hintText: isGpa ? '3.7' : '85',
+                hintStyle: AppText.sans(size: 19, weight: FontWeight.w800, letterSpacing: -0.5, color: colors.textDim),
+                suffixText: isGpa ? null : '%',
+                suffixStyle: AppText.sans(size: 14, color: colors.textMed),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           Text(isGpa ? 'out of 4.0' : 'target %', style: AppText.sans(size: 12, weight: FontWeight.w700, color: colors.textDim)),
         ],
       ),

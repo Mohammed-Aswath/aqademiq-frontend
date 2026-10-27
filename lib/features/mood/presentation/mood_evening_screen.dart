@@ -8,10 +8,10 @@ import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
-import '../../../data/fixtures/fixtures.dart';
-import '../../../data/models/enums.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../data/models/mood_log.dart';
 import '../../../data/repositories/mood_repository.dart';
+import '../../../services/haptics/haptics_service.dart';
 import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/app_text_field.dart';
 import '../../../shared/widgets/dismiss_keyboard.dart';
@@ -20,8 +20,8 @@ import '../../../shared/widgets/primary_button.dart';
 
 /// Frame `mood-evening` — full-screen Evening reflection. A left-aligned column
 /// with a 5-mood picker row (pre-selected "Good"/idx 3), an optional note field,
-/// and a "This week's mood" card. The CTA logs the reflection via
-/// [MoodRepository.log] (phase [MoodPhase.evening]) and returns to the planner.
+/// and a "This week's mood" card. The CTA upserts mood + optional reflection via
+/// [MoodRepository.upsertDay] and returns to the planner.
 class MoodEveningScreen extends ConsumerStatefulWidget {
   const MoodEveningScreen({super.key});
 
@@ -50,14 +50,28 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
     super.dispose();
   }
 
+  /// Tier 3 detent on an actual move — the melt ramp made tactile (§5.1).
+  void _select(int idx) {
+    if (idx != _sel) ref.read(hapticsProvider).moodRampStep(idx);
+    setState(() => _sel = idx);
+  }
+
   Future<void> _save() async {
-    await ref.read(moodRepositoryProvider).log(
-          date: Fixtures.today,
-          phase: MoodPhase.evening,
+    final note = _note.text.trim();
+    // Persist the selected mood on the morning/adhoc wire (mood_index), then
+    // optionally the evening reflection. Reflection is never required — an
+    // empty note simply skips / clears the reflection write.
+    await ref.read(moodRepositoryProvider).upsertDay(
+          date: AppDate.today(),
           mood: _sel,
-          note: _note.text.isEmpty ? null : _note.text,
+          note: note,
+          writeReflection: true,
         );
+    // On commit. The note field itself is explicitly zero (§7, Mood) — the
+    // keyboard owns typing.
+    ref.read(hapticsProvider).moodLogged();
     ref.invalidate(moodWeekProvider);
+    ref.invalidate(streakProvider);
     if (mounted) context.go(Routes.plan);
   }
 
@@ -77,7 +91,8 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final logs = ref.watch(moodWeekProvider).value ?? const <MoodLog>[];
-    final monday = Fixtures.today.subtract(Duration(days: Fixtures.today.weekday - 1));
+    final today = AppDate.today();
+    final monday = today.subtract(Duration(days: today.weekday - 1));
     return Scaffold(
       backgroundColor: colors.surface,
       body: DismissKeyboard(
@@ -134,7 +149,7 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
                         idx: i,
                         selected: i == _sel,
                         color: _moodColors[i],
-                        onTap: () => setState(() => _sel = i),
+                        onTap: () => _select(i),
                       ),
                   ],
                 ),

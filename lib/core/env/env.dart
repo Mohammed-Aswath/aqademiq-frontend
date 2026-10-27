@@ -20,8 +20,18 @@
 abstract final class Env {
   /// When `true` (the default) every repository is backed by a `MockXxxSource`
   /// returning delayed fixtures. Flip to `false` to hit the live backend.
+  ///
+  /// **Release builds default to the live backend**, not mocks. Debug/profile
+  /// still default to mocks for local dev. This guardrail exists because a
+  /// release archive built *without* the dart-defines (e.g. Xcode
+  /// Product → Archive, or `flutter build ipa` without
+  /// `--dart-define-from-file=dart_defines.json`) would otherwise silently ship
+  /// the hardcoded demo app with no backend — exactly the "we're back to the
+  /// basic frontend" failure. With this, a mis-built release fails loudly
+  /// (no data) instead of shipping a convincing fake.
+  static const bool _isReleaseBuild = bool.fromEnvironment('dart.vm.product');
   static const bool useMocks =
-      bool.fromEnvironment('USE_MOCKS', defaultValue: true);
+      bool.fromEnvironment('USE_MOCKS', defaultValue: !_isReleaseBuild);
 
   /// Base URL of the NestJS REST API (includes the global `/v1` prefix).
   /// Defaults to local dev so flipping [useMocks] off "just works" locally.
@@ -40,4 +50,63 @@ abstract final class Env {
 
   /// Whether a non-mock base URL is configured.
   static bool get hasLiveConfig => apiBaseUrl.isNotEmpty;
+
+  /// Supabase project URL — identity (auth) is Supabase Auth. Required live.
+  /// e.g. https://qwvuoooentacjslzpbqy.supabase.co
+  static const String supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+
+  /// Supabase anon/publishable key — safe to ship in the client.
+  static const String supabaseAnonKey =
+      String.fromEnvironment('SUPABASE_ANON_KEY');
+
+  /// Whether Supabase Auth is configured (live builds).
+  static bool get hasSupabase =>
+      supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
+
+  /// Google OAuth **iOS** client ID (`…apps.googleusercontent.com`) — used for
+  /// native Google sign-in on iOS; its reversed form is the Info.plist URL
+  /// scheme. Empty when Google sign-in isn't configured.
+  static const String googleIosClientId =
+      String.fromEnvironment('GOOGLE_IOS_CLIENT_ID');
+
+  /// Google OAuth **Web** client ID, passed as `serverClientId` so the returned
+  /// ID token carries the audience Supabase's Google provider expects.
+  static const String googleServerClientId =
+      String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+
+  /// Whether native Google sign-in is configured (the web/server client ID is
+  /// the minimum; iOS additionally needs the iOS client ID + URL scheme).
+  static bool get hasGoogleSignIn => googleServerClientId.isNotEmpty;
+
+  /// Whether native Google sign-in can actually run on **Apple** platforms.
+  ///
+  /// The Google iOS SDK needs a client id and has exactly three places to look
+  /// for one: this define, `GIDClientID` in `Info.plist`, or `CLIENT_ID` in
+  /// `GoogleService-Info.plist`. Ours is an FCM-only plist with no `CLIENT_ID`,
+  /// and there is no `GIDClientID` — so without this define there is no client
+  /// id anywhere and `initialize()` cannot succeed.
+  ///
+  /// That matters more than a hidden button: the sheet never presents, the
+  /// platform never calls back, and the sign-in screen — whose every control is
+  /// gated on `isLoading` — stops responding to taps. App Review saw exactly
+  /// that (submission 7d5244b9, iPad Air 11-inch, iPadOS 26.6).
+  ///
+  /// Deliberately separate from [hasGoogleSignIn]: Android needs only the
+  /// server client id, and gating it on the iOS one would break a flow that
+  /// works today.
+  static bool get hasAppleGoogleSignIn =>
+      hasGoogleSignIn && googleIosClientId.isNotEmpty;
+
+  /// Client-side reminder scheduling (`services/reminder_scheduler.dart`).
+  ///
+  /// **On by default.** Server push (`pg_cron` → `/cron/notifications` → FCM)
+  /// has not been delivering reliably and only ever covered one of the seven
+  /// channels the Notifications screen offers, so the device schedules its own
+  /// reminders from the task list.
+  ///
+  /// Build with `--dart-define=LOCAL_REMINDERS=false` to hand scheduling back
+  /// to the backend once its sweep is verified — otherwise a working server
+  /// path would notify on top of the local one.
+  static const bool localReminders =
+      bool.fromEnvironment('LOCAL_REMINDERS', defaultValue: true);
 }

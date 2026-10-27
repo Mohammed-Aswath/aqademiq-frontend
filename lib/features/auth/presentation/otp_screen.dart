@@ -4,13 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/error/failure.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
 import '../../../data/auth/auth_repository.dart';
 import '../../../shared/widgets/circle_back_button.dart';
 import '../../../shared/widgets/primary_button.dart';
+import '../../onboarding/onboarding_gate.dart';
 import '../controllers/auth_controller.dart';
 import 'widgets/otp_field.dart';
 
@@ -56,10 +56,23 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 
   Future<void> _verify() async {
     if (_code.length != 6) return;
+    // Read before verifying, which clears it.
+    final upgradingGuest = ref.read(authRepositoryProvider).isGuestUpgradePending;
     final ok = await ref.read(authControllerProvider.notifier).verify(_code);
     if (!mounted) return;
     if (ok) {
-      context.go(Routes.obAge);
+      // A recovery code proves the address, it does not finish anything: the
+      // account still has no usable password until the next screen sets one.
+      // Sending it to onboarding instead would leave that half-done.
+      if (ref.read(authRepositoryProvider).isRecoveryPending) {
+        context.go(Routes.resetPassword);
+      } else if (upgradingGuest) {
+        // Same account, now with an email. One that was already set up as a
+        // guest goes back into the app; one that was not, into onboarding.
+        unawaited(routeAfterAuth(context, ref));
+      } else {
+        context.go(Routes.obAge);
+      }
     } else {
       _showError(ref.read(authControllerProvider).error);
     }
@@ -80,10 +93,11 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   }
 
   void _showError(Object? error) {
-    final message =
-        error is Failure ? error.message : 'Invalid or expired code.';
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(authErrorMessage(error)),
+      ),
     );
   }
 

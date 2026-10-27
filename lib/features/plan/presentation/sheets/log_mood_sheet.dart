@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../../core/theme/app_text.dart';
+import '../../../../services/haptics/haptics_service.dart';
 import '../../../../shared/widgets/mood_blob.dart';
 import '../../../../shared/widgets/primary_button.dart';
 
@@ -16,96 +18,188 @@ const List<Color> _moodColors = [
   Color(0xFF5A44F1),
 ];
 
-/// plan-logmood — "How are you feeling?" check-in bottom sheet.
+/// Result of [showLogMoodSheet]. [note] is null when the optional reflection
+/// field was not shown; otherwise it is the trimmed text (may be empty).
+typedef LogMoodResult = ({int mood, String? note});
+
+/// "How are you feeling?" check-in bottom sheet (plan-logmood).
 ///
-/// Presents the 5-step mood scale (idx 0–4) with idx 3 (Good) preselected.
-/// Returns the chosen mood index on "Log mood", or `null` if the user taps
-/// "Skip for now" or dismisses the sheet.
-Future<int?> showLogMoodSheet(BuildContext context) {
-  return showModalBottomSheet<int>(
+/// Presents the 5-step mood scale (idx 0–4) with [initialMood] preselected
+/// (default Good / 3). Optionally shows a reflection field when [includeNote]
+/// is true (Stats edit flow). Returns the chosen mood on "Log mood", or `null`
+/// if the user taps "Skip for now" or dismisses the sheet.
+///
+/// Reflection is never required — empty note is a valid save, matching Planner.
+Future<LogMoodResult?> showLogMoodSheet(
+  BuildContext context, {
+  int initialMood = 3,
+  String? initialNote,
+  bool includeNote = false,
+}) {
+  return showModalBottomSheet<LogMoodResult>(
     context: context,
     useRootNavigator: true,
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0x42140F1C),
     isScrollControlled: true,
-    builder: (context) => const _LogMoodSheet(),
+    builder: (context) => _LogMoodSheet(
+      initialMood: initialMood.clamp(0, 4),
+      initialNote: initialNote,
+      includeNote: includeNote,
+    ),
   );
 }
 
-class _LogMoodSheet extends StatefulWidget {
-  const _LogMoodSheet();
+/// Consumer-backed only so the ramp detent can reach `hapticsProvider`; this
+/// sheet still owns no app state and still returns its result by popping.
+class _LogMoodSheet extends ConsumerStatefulWidget {
+  const _LogMoodSheet({
+    required this.initialMood,
+    required this.initialNote,
+    required this.includeNote,
+  });
+
+  final int initialMood;
+  final String? initialNote;
+  final bool includeNote;
 
   @override
-  State<_LogMoodSheet> createState() => _LogMoodSheetState();
+  ConsumerState<_LogMoodSheet> createState() => _LogMoodSheetState();
 }
 
-class _LogMoodSheetState extends State<_LogMoodSheet> {
-  int _selected = 3;
+class _LogMoodSheetState extends ConsumerState<_LogMoodSheet> {
+  late int _selected = widget.initialMood;
+  late final TextEditingController _note = TextEditingController(
+    text: widget.initialNote ?? '',
+  );
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  /// Tier 3 detent on an actual move, following the melt ramp (§5.1).
+  ///
+  /// The *commit* haptic is not fired here: this sheet only reports a choice,
+  /// and its callers (Plan's menu, Stats' day editor) write the log and fire
+  /// `moodLogged` once the write lands.
+  void _select(int idx) {
+    if (idx != _selected) ref.read(hapticsProvider).moodRampStep(idx);
+    setState(() => _selected = idx);
+  }
+
+  void _submit() {
+    Navigator.of(context).pop((
+      mood: _selected,
+      note: widget.includeNote ? _note.text.trim() : null,
+    ));
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(AppRadius.sheetTop),
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Container(
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(AppRadius.sheetTop),
+          ),
+          boxShadow: colors.sheetShadow,
         ),
-        boxShadow: colors.sheetShadow,
-      ),
-      padding: const EdgeInsets.fromLTRB(18, 12, 18, 22),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 38,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE0DDD7),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              Text(
-                'How are you feeling?',
-                textAlign: TextAlign.center,
-                style: AppText.sans(size: 21, weight: FontWeight.w800),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'A quick check-in helps Ada tune your day',
-                textAlign: TextAlign.center,
-                style: AppText.sans(size: 11.5, color: colors.textMed),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  for (var i = 0; i < 5; i++) _MoodColumn(
-                    idx: i,
-                    selected: _selected == i,
-                    onTap: () => setState(() => _selected = i),
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 22),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0DDD7),
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              PrimaryButton(
-                label: 'Log mood',
-                onPressed: () => Navigator.of(context).pop(_selected),
-              ),
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: () => Navigator.of(context).pop(),
-                child: Text(
-                  'Skip for now',
+                ),
+                Text(
+                  'How are you feeling?',
+                  textAlign: TextAlign.center,
+                  style: AppText.sans(size: 21, weight: FontWeight.w800),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'A quick check-in helps Ada tune your day',
+                  textAlign: TextAlign.center,
                   style: AppText.sans(size: 11.5, color: colors.textMed),
                 ),
-              ),
-            ],
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    for (var i = 0; i < 5; i++)
+                      _MoodColumn(
+                        idx: i,
+                        selected: _selected == i,
+                        onTap: () => _select(i),
+                      ),
+                  ],
+                ),
+                if (widget.includeNote) ...[
+                  const SizedBox(height: 18),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Reflection (optional)',
+                      style: AppText.sans(
+                        size: 10,
+                        weight: FontWeight.w800,
+                        letterSpacing: AppText.em(0.06, 10),
+                        color: colors.textDim,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    constraints: const BoxConstraints(minHeight: 64),
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: colors.bg,
+                      borderRadius: BorderRadius.circular(AppRadius.rowInput),
+                    ),
+                    child: TextField(
+                      controller: _note,
+                      minLines: 2,
+                      maxLines: 4,
+                      cursorColor: colors.text,
+                      style: AppText.sans(size: 12.5, color: colors.text),
+                      decoration: InputDecoration.collapsed(
+                        hintText: 'What made today that way?',
+                        hintStyle: AppText.sans(size: 12.5, color: colors.textDim),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 22),
+                PrimaryButton(
+                  label: 'Log mood',
+                  onPressed: _submit,
+                ),
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: () => Navigator.of(context).pop(),
+                  child: Text(
+                    'Skip for now',
+                    style: AppText.sans(size: 11.5, color: colors.textMed),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

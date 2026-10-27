@@ -5,8 +5,30 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Haptics (HapticsBridge). Declared here rather than left to arrive
+         through flutter_local_notifications' manifest: without it every
+         vibrate() throws, the bridge swallows it, and haptics go silent. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- Locally-scheduled reminders (services/reminder_scheduler.dart) are
+         alarms, and Android drops every alarm on reboot. Without this the
+         week's schedule silently disappears the first time the phone restarts.
+         Note there is deliberately no SCHEDULE_EXACT_ALARM/USE_EXACT_ALARM:
+         the scheduler uses inexactAllowWhileIdle, which needs no permission
+         and avoids the Play Store policy review exact alarms trigger. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- Voice input (services/voice_input_service.dart): dictation into Ada and
+         Quick Add. The speech itself is recognised by the phone's own service;
+         Aqademiq never records or uploads audio. The BLUETOOTH* permissions the
+         speech_to_text README lists are left out on purpose — the plugin runs
+         with androidNoBluetooth, so no second runtime prompt is needed. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Settings → Calendar import (DeviceImportPlugin.kt): reads the phone's
+         calendars — Google, Samsung, Outlook — so picked events become tasks.
+         Read only: there is deliberately no WRITE_CALENDAR. Asked for at the
+         moment the student taps "This phone's calendars", never at launch. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR"/>
     <application
-        android:label="aqademiq"
+        android:label="Aqademiq"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -30,12 +52,126 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Deep links, arriving from two directions and sharing one filter.
+
+                 The ambient surfaces speak in intent (aqademiq://focus, ://plan,
+                 ://stats) rather than in route strings, so renaming a route
+                 cannot break a widget already sitting on someone's home screen.
+                 Referrals use the same scheme (aqademiq://join?ref=CODE). The
+                 filter deliberately carries no android:host, which makes it a
+                 superset of both - a host="join" filter would have to be kept in
+                 step with every new surface that ever wants a link.
+
+                 The custom scheme works the moment the app is installed and
+                 needs nothing hosted, but it is not clickable in most chat
+                 apps - which is why the SHARED link is the https one below. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="aqademiq"/>
+            </intent-filter>
+            <!-- The shared link. android:autoVerify makes this an Android App
+                 Link, which opens the app instead of the browser - but ONLY
+                 once https://www.aqademiq.com/.well-known/assetlinks.json is
+                 hosted with this app's package name and signing-cert SHA-256.
+                 Until that file exists the link still works, it just opens the
+                 site, which is what the bare URL it replaced already did. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="www.aqademiq.com" android:pathPrefix="/join"/>
+                <data android:scheme="https" android:host="aqademiq.com" android:pathPrefix="/join"/>
+            </intent-filter>
         </activity>
         <!-- flutter_foreground_task service keeping focus sessions alive. -->
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false" />
+        <!-- The session card (services/ambient). A foreground service because
+             Android will otherwise kill the process mid-session and take Prism
+             and the timer with it — and because only a foreground service may
+             own the ongoing notification the countdown is drawn in. One
+             service, one notification: a separate keepalive would put two
+             entries in the shade for a single session. -->
+        <service
+            android:name=".AmbientSessionService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+        <!-- "Start 5" from the notification shade — Android's version of the
+             Control Centre control and the Focus widget's button. -->
+        <service
+            android:name=".StartFiveTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_qs_ada"
+            android:label="Focus"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+        <!-- The three home-screen widgets (spec §5; AmbientWidgets.kt): Next,
+             This week and Focus, drawn from the state AmbientBridge keeps. -->
+        <receiver
+            android:name=".NextWidget"
+            android:exported="true"
+            android:label="@string/widget_next_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_next_info"/>
+        </receiver>
+        <receiver
+            android:name=".WeekWidget"
+            android:exported="true"
+            android:label="@string/widget_week_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_week_info"/>
+        </receiver>
+        <receiver
+            android:name=".FocusWidget"
+            android:exported="true"
+            android:label="@string/widget_focus_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_focus_info"/>
+        </receiver>
+        <!-- flutter_local_notifications: delivers a scheduled reminder when its
+             alarm fires, and re-registers the pending schedule after a reboot
+             or an app update. Both are required for zonedSchedule to survive. -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false" />
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
+        <!-- Notification icon/colour for FCM-delivered messages (server push).
+             Without these, FCM falls back to the launcher icon, which renders as
+             a blank square / the Flutter default in the status bar. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/notification_color" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -51,6 +187,12 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+ hides other apps' services unless declared here. Without
+             it the speech recognizer is invisible and voice input reports the
+             phone as unsupported. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

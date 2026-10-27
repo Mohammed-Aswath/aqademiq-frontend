@@ -1,34 +1,56 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/env/env.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
+import '../../onboarding/onboarding_gate.dart';
 
-/// FRAMES `splash` — brand splash, auto-advances to Welcome.
-class SplashScreen extends StatefulWidget {
+/// FRAMES `splash` — brand splash. Restores a persisted session on launch:
+/// a signed-in user goes straight to the app (or into onboarding if it isn't
+/// finished yet); otherwise on to Welcome.
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends ConsumerState<SplashScreen>
+    with SingleTickerProviderStateMixin {
   Timer? _timer;
+  late final AnimationController _dots = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1050),
+  )..repeat();
 
   @override
   void initState() {
     super.initState();
     _timer = Timer(const Duration(milliseconds: 1600), () {
-      if (mounted) context.go(Routes.welcome);
+      if (!mounted) return;
+      // supabase_flutter persists the session, so a returning user is already
+      // signed in here — skip the sign-in wall and route into the app.
+      final signedIn = !Env.useMocks &&
+          Env.hasSupabase &&
+          Supabase.instance.client.auth.currentSession != null;
+      if (signedIn) {
+        unawaited(routeAfterAuth(context, ref));
+      } else {
+        context.go(Routes.welcome);
+      }
     });
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _dots.dispose();
     super.dispose();
   }
 
@@ -61,20 +83,31 @@ class _SplashScreenState extends State<SplashScreen> {
             bottom: 30,
             left: 0,
             right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                for (var i = 0; i < 3; i++)
-                  Container(
-                    width: 6,
-                    height: 6,
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: i == 0 ? colors.accent : colors.textDim.withValues(alpha: 0.4),
-                    ),
-                  ),
-              ],
+            child: AnimatedBuilder(
+              animation: _dots,
+              builder: (context, _) {
+                // Cycle the accent highlight across the three dots as a loading
+                // indicator (0 → 1 → 2 → repeat).
+                final active = (_dots.value * 3).floor() % 3;
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    for (var i = 0; i < 3; i++)
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 250),
+                        width: 6,
+                        height: 6,
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: i == active
+                              ? colors.accent
+                              : colors.textDim.withValues(alpha: 0.4),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
         ],

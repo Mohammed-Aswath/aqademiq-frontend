@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+	<!-- Push Notifications (APNs). Xcode promotes this to `production` for
+	     distribution/TestFlight archives; `development` is correct for the file. -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<!-- Lets task reminders deliver as time-sensitive (interruption-level in the
+	     push payload), breaking through Focus / Scheduled Summary batching. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
+	<!-- The only channel between the app and its widget extension: the session
+	     state the lock screen, the Island and the widgets all render from.
+	     Must match AmbientWidgets.entitlements and AmbientStore.appGroup. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.r13.aqademiq.shared</string>
+	</array>
+</dict>
+</plist>

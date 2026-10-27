@@ -1,15 +1,32 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../core/auth/token_store.dart';
 import '../../core/env/env.dart';
 import '../../core/error/failure.dart';
-import '../../core/network/api_error.dart';
 import '../../core/network/dio_client.dart';
 import '../models/app_user.dart';
+
+/// Shown when a signup targets an email that already has an account.
+///
+/// Deliberately names Apple and Google: 40% of real accounts exist only through
+/// a social provider, and their owners genuinely do not remember signing up —
+/// to them this looks like a brand-new registration that silently fails.
+///
+/// Note this does confirm the address is registered, which Supabase itself
+/// declines to do. That is a considered trade: for a student planner the
+/// enumeration risk is slight, and the alternative is a dead end for nearly half
+/// the user base. Soften the wording here if that balance ever changes.
+const String kAccountAlreadyExists =
+    'That email already has an account. Sign in instead — and if you first '
+    'joined with Apple or Google, use that button.';
+
+/// Addresses [MockAuthRepository] treats as already registered, so the
+/// already-has-an-account path can be exercised without a live backend.
+const Set<String> kMockTakenEmails = {'taken@example.com'};
 
 /// Auth behind an interface (README §7, seam 4).
 ///
@@ -48,6 +65,10 @@ abstract interface class AuthRepository {
   /// Start email registration (`POST /auth/signup`). Does NOT sign in — the
   /// backend issues a 6-digit OTP; complete with [verifyOtp]. The pending email
   /// is remembered so [verifyOtp] needs only the code.
+  ///
+  /// From guest mode this upgrades the guest account in place instead
+  /// ([linkGuestToAccount]): a fresh account would leave everything the guest
+  /// made behind on the old id (GST-4).
   Future<AppUser> signUp({
     required String name,
     required String email,
@@ -60,24 +81,52 @@ abstract interface class AuthRepository {
   /// Resend the pending signup/link OTP (`POST /auth/resend-otp`).
   Future<void> resendOtp();
 
-  /// Google Sign-In — post the provider **ID token** (`POST /auth/sso/google`).
-  Future<AppUser> signInWithGoogle(String idToken);
+  /// Email a password-reset code.
+  ///
+  /// Works for an account created with Apple or Google as well: completing the
+  /// reset sets a password, which CREATES the email identity those accounts
+  /// never had. That is what unsticks the 40% who currently cannot sign in with
+  /// an email at all.
+  Future<void> sendPasswordReset(String email);
 
-  /// Apple Sign-In — post the identity token (`POST /auth/sso/apple`).
+  /// Set a new password on the session a recovery OTP just established.
+  Future<void> setPassword(String password);
+
+  /// True while the pending OTP is a password recovery rather than a signup, so
+  /// the verify screen knows to ask for a new password instead of onboarding.
+  bool get isRecoveryPending;
+
+  /// Google Sign-In — exchange the provider **ID token** for a Supabase session
+  /// via `signInWithIdToken`. [nonce] is the **raw** nonce whose SHA-256 was
+  /// handed to Google's SDK; on iOS the token embeds that nonce and Supabase
+  /// needs the raw value to validate it (Android passes `null`).
+  Future<AppUser> signInWithGoogle(String idToken, {String? nonce});
+
+  /// Apple Sign-In — exchange the Apple identity token for a Supabase session
+  /// via `signInWithIdToken`. [nonce] is the **raw** nonce whose SHA-256 was
+  /// sent to Apple; Supabase needs the raw value to validate the token.
   Future<AppUser> signInWithApple({
     required String identityToken,
+    String? nonce,
     String? fullName,
   });
 
-  /// "Save progress": attach email/password to the guest account
-  /// (`POST /auth/link-guest`). Issues an OTP; finish with [verifyOtp]. Data is
-  /// preserved under the same user id.
+  /// "Save progress": attach email/password to the guest account. Issues an
+  /// OTP; finish with [verifyOtp]. Data is preserved under the same user id.
   Future<AppUser> linkGuestToAccount({
     required String email,
     required String password,
   });
 
+  /// Whether the code being waited for upgrades a guest — which decides where
+  /// the verify screen goes next: a guest who already set up the app goes back
+  /// into it, not through onboarding again.
+  bool get isGuestUpgradePending;
+
   Future<void> signOut();
+
+  /// Permanently delete the account (`DELETE /profile/account`), then sign out.
+  Future<void> deleteAccount();
 
   void dispose();
 }
@@ -120,9 +169,18 @@ class MockAuthRepository implements AuthRepository {
   @override
   Future<AppUser> signInAnonymously() async {
     final user = await _delayed(_guest);
+    _guestChosen = true;
     _emit(user);
     return user;
   }
+
+  /// Mock users start out as a guest before choosing anything; only someone
+  /// who actually picked guest mode is upgraded rather than signed up fresh.
+  bool _guestChosen = false;
+  bool _upgrading = false;
+
+  @override
+  bool get isGuestUpgradePending => _upgrading;
 
   @override
   Future<AppUser> signInWithEmail({
@@ -142,13 +200,34 @@ class MockAuthRepository implements AuthRepository {
     required String email,
     required String password,
   }) async {
+    // mock == real (README §7, seam 3). The live path throws for an address that
+    // already has an account; a mock that always succeeded would hide the one
+    // case worth rehearsing, since it is the failure 40% of real users meet.
+    if (kMockTakenEmails.contains(email.trim().toLowerCase())) {
+      throw const AuthFailure(message: kAccountAlreadyExists);
+    }
     _pendingEmail = email;
     _pendingName = name;
+    final current = _user;
+    if (_guestChosen && current != null && current.isGuest) {
+      _upgrading = true;
+      return _delayed(current.copyWith(email: email));
+    }
     return _delayed(AppUser(id: '', name: name, email: email));
   }
 
   @override
   Future<void> verifyOtp(String code) async {
+    if (_upgrading) {
+      // Same id, now with an address: what the live upgrade does.
+      _upgrading = false;
+      _guestChosen = false;
+      final upgraded = await _delayed(
+        (_user ?? _guest).copyWith(email: _pendingEmail, isGuest: false),
+      );
+      _emit(upgraded);
+      return;
+    }
     final user = await _delayed(
       AppUser(
         id: 'user-${(_pendingEmail ?? '').hashCode}',
@@ -164,7 +243,25 @@ class MockAuthRepository implements AuthRepository {
   Future<void> resendOtp() => _delayed(null);
 
   @override
-  Future<AppUser> signInWithGoogle(String idToken) async {
+  Future<void> sendPasswordReset(String email) async {
+    _pendingEmail = email;
+    _mockRecovery = true;
+    await _delayed(null);
+  }
+
+  @override
+  Future<void> setPassword(String password) async {
+    _mockRecovery = false;
+    await _delayed(null);
+  }
+
+  @override
+  bool get isRecoveryPending => _mockRecovery;
+
+  bool _mockRecovery = false;
+
+  @override
+  Future<AppUser> signInWithGoogle(String idToken, {String? nonce}) async {
     final user = await _delayed(
       const AppUser(id: 'user-google', name: 'Google User', isGuest: false),
     );
@@ -175,6 +272,7 @@ class MockAuthRepository implements AuthRepository {
   @override
   Future<AppUser> signInWithApple({
     required String identityToken,
+    String? nonce,
     String? fullName,
   }) async {
     final user = await _delayed(
@@ -204,6 +302,12 @@ class MockAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> deleteAccount() async {
+    await _delayed(null);
+    _emit(null);
+  }
+
+  @override
   void dispose() => _controller.close();
 }
 
@@ -212,20 +316,38 @@ class MockAuthRepository implements AuthRepository {
 // ---------------------------------------------------------------------------
 
 class ApiAuthRepository implements AuthRepository {
-  ApiAuthRepository(this._dio, this._tokens) {
-    _controller = StreamController<AppUser?>.broadcast(
-      onListen: () => _controller.add(_user),
-    );
-    unawaited(_bootstrap());
+  ApiAuthRepository(this._dio) {
+    _controller = StreamController<AppUser?>.broadcast();
+    // Mirror Supabase auth state into AppUser. `initialSession` fires on launch
+    // with the persisted session (or null), so a returning user stays signed in.
+    _sub = _auth.onAuthStateChange.listen((state) async {
+      final session = state.session;
+      if (session == null) {
+        _emit(null);
+        return;
+      }
+      final hydrate = state.event != AuthChangeEvent.tokenRefreshed;
+      _emit(await _mapSession(session, hydrate: hydrate));
+    });
   }
 
   final Dio _dio;
-  final TokenStore _tokens;
-
   late final StreamController<AppUser?> _controller;
+  late final StreamSubscription<AuthState> _sub;
+
+  GoTrueClient get _auth => Supabase.instance.client.auth;
+
   AppUser? _user;
   String? _pendingEmail;
   String? _pendingName;
+  OtpType _pendingOtpType = OtpType.signup;
+
+  /// A guest's chosen password, held until their email is verified: Supabase
+  /// upgrades an anonymous user email first, then password.
+  String? _pendingPassword;
+
+  @override
+  bool get isGuestUpgradePending => _pendingOtpType == OtpType.emailChange;
 
   @override
   AppUser? get currentUser => _user;
@@ -244,71 +366,55 @@ class ApiAuthRepository implements AuthRepository {
   /// Called by the interceptor when a refresh fails — session is dead.
   void handleSessionExpired() => _emit(null);
 
-  /// On boot: if we hold tokens, reconstruct the user from the JWT + profile.
-  Future<void> _bootstrap() async {
-    await _tokens.load();
-    if (!_tokens.hasSession) {
-      _emit(null);
-      return;
-    }
-    final claims = _decodeJwt(_tokens.accessToken!);
-    final id = claims?['sub'] as String? ?? '';
-    final isGuest = claims?['is_guest'] as bool? ?? true;
-    // Enrich with profile (name/email) — best effort.
+  /// Build an [AppUser] from the SDK session, enriching from /profile when asked.
+  Future<AppUser> _mapSession(Session session, {bool hydrate = true}) async {
+    final u = session.user;
+    var user = AppUser(
+      id: u.id,
+      name: (u.userMetadata?['name'] as String?) ??
+          (u.email != null ? u.email!.split('@').first : (u.isAnonymous ? 'Guest' : 'You')),
+      email: u.email,
+      isGuest: u.isAnonymous,
+    );
+    if (!hydrate) return user;
     try {
       final res = await _dio.get<Map<String, dynamic>>('/profile');
       final p = res.data ?? const {};
-      _emit(AppUser(
-        id: id,
-        name: (p['name'] as String?)?.trim().isNotEmpty ?? false ? p['name'] as String : 'You',
-        email: p['email'] as String?,
-        isGuest: (p['is_guest'] as bool?) ?? isGuest,
-      ));
+      final name = p['name'] as String?;
+      user = user.copyWith(
+        name: (name != null && name.trim().isNotEmpty) ? name : user.name,
+        email: (p['email'] as String?) ?? user.email,
+        isGuest: (p['is_guest'] as bool?) ?? user.isGuest,
+      );
     } on Object {
-      _emit(AppUser(id: id, name: isGuest ? 'Guest' : 'You', isGuest: isGuest));
+      // best-effort profile hydration
     }
+    return user;
   }
 
-  /// Parse a `{access_token, refresh_token, user}` login body; persist + emit.
-  Future<AppUser> _consumeTokenPair(Map<String, dynamic> data) async {
-    final access = data['access_token'] as String;
-    final refresh = data['refresh_token'] as String;
-    await _tokens.save(AuthTokens(accessToken: access, refreshToken: refresh));
-    final u = (data['user'] as Map?)?.cast<String, dynamic>();
-    final claims = _decodeJwt(access);
-    final user = AppUser(
-      id: (u?['id'] as String?) ?? (claims?['sub'] as String? ?? ''),
-      name: _pendingName ??
-          (u?['email'] as String?)?.split('@').first ??
-          ((u?['is_guest'] as bool? ?? false) ? 'Guest' : 'You'),
-      email: u?['email'] as String?,
-      isGuest: (u?['is_guest'] as bool?) ?? (claims?['is_guest'] as bool? ?? false),
-    );
+  Future<AppUser> _require(Session? session, {bool hydrate = true}) async {
+    if (session == null) {
+      throw const AuthFailure(message: 'Sign-in failed — no session returned.');
+    }
+    final user = await _mapSession(session, hydrate: hydrate);
     _emit(user);
     return user;
   }
 
-  Future<Map<String, dynamic>> _post(String path, [Object? body]) async {
-    try {
-      final res = await _dio.post<Map<String, dynamic>>(path, data: body);
-      return res.data ?? const {};
-    } on Object catch (e, st) {
-      throw mapDioError(e, st);
-    }
-  }
-
   @override
-  Future<AppUser> signInAnonymously() async =>
-      _consumeTokenPair(await _post('/auth/guest'));
+  Future<AppUser> signInAnonymously() async {
+    final res = await _auth.signInAnonymously();
+    return _require(res.session, hydrate: false);
+  }
 
   @override
   Future<AppUser> signInWithEmail({
     required String email,
     required String password,
-  }) async =>
-      _consumeTokenPair(
-        await _post('/auth/signin', {'email': email, 'password': password}),
-      );
+  }) async {
+    final res = await _auth.signInWithPassword(email: email, password: password);
+    return _require(res.session);
+  }
 
   @override
   Future<AppUser> signUp({
@@ -316,9 +422,35 @@ class ApiAuthRepository implements AuthRepository {
     required String email,
     required String password,
   }) async {
+    // A guest is already an account — an anonymous one, which every task and
+    // subject they made belongs to. signUp would create a second account and
+    // strand all of that on the first (GST-4); upgrading keeps the same id.
+    if (_auth.currentUser?.isAnonymous ?? false) {
+      return linkGuestToAccount(email: email, password: password);
+    }
     _pendingEmail = email;
     _pendingName = name.trim().isEmpty ? null : name.trim();
-    await _post('/auth/signup', {'email': email, 'password': password});
+    _pendingOtpType = OtpType.signup;
+    final res = await _auth.signUp(email: email, password: password, data: {'name': name});
+    if (res.session != null) return _require(res.session);
+
+    // Supabase will not say "that email is taken" — that would be a
+    // user-enumeration hole — so for an address that already has an account it
+    // returns a FAKE success: no session, an empty `identities` list, and no
+    // email sent at all.
+    //
+    // Checking only `session != null` therefore dropped the user on an OTP
+    // screen waiting for a code that was never going to arrive, and "Resend"
+    // was dead too because there was no pending signup to resend. Measured on
+    // production: 18 of 45 real accounts (40%) exist only via Apple or Google,
+    // so their owners see a first-time signup that silently goes nowhere.
+    //
+    // `identities == []` is the exact obfuscated shape. A null `user` means some
+    // other failure, so it is deliberately not treated as "already exists".
+    final identities = res.user?.identities;
+    if (identities != null && identities.isEmpty) {
+      throw const AuthFailure(message: kAccountAlreadyExists);
+    }
     return AppUser(id: '', name: name, email: email);
   }
 
@@ -328,49 +460,150 @@ class ApiAuthRepository implements AuthRepository {
     if (email == null) {
       throw const AuthFailure(message: 'No pending verification. Start again.');
     }
-    final data = await _post('/auth/verify-otp', {'email': email, 'code': code});
-    final user = await _consumeTokenPair(data);
-    // Persist the collected name onto the profile if we have one.
+    final res = await _auth.verifyOTP(email: email, token: code, type: _pendingOtpType);
+    var session = res.session;
+    if (_pendingOtpType == OtpType.emailChange) {
+      // A guest upgrade: the address is now theirs, so the password can go on.
+      session = await _finishGuestUpgrade() ?? session;
+    }
+    if (session == null) {
+      throw const AuthFailure(message: 'Verification failed. Check the code and try again.');
+    }
+    var user = await _mapSession(session);
     if (_pendingName != null && _pendingName!.isNotEmpty) {
       try {
         await _dio.patch<Map<String, dynamic>>('/profile', data: {'name': _pendingName});
-        _emit(user.copyWith(name: _pendingName!));
+        user = user.copyWith(name: _pendingName!);
       } on Object {
         // Non-fatal.
       }
     }
+    _pendingEmail = null;
     _pendingName = null;
+    _emit(user);
   }
+
+  /// Sets the password a guest chose at sign-up, then refreshes the session.
+  ///
+  /// The refresh matters: the API decides who is a guest from the token's
+  /// `is_anonymous` claim, and only a token minted after the upgrade says no.
+  ///
+  /// A password that fails to save does not undo anything — the email is
+  /// verified and the data is theirs — so it is retried once and then let go:
+  /// "Forgot password" sets one later. Failing here instead would leave them on
+  /// a code screen whose code has already been used.
+  Future<Session?> _finishGuestUpgrade() async {
+    final password = _pendingPassword;
+    _pendingPassword = null;
+    _pendingOtpType = OtpType.signup;
+    if (password != null && password.isNotEmpty) {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          await _auth.updateUser(UserAttributes(password: password));
+          break;
+        } on Object catch (e) {
+          debugPrint('guest upgrade: password not saved ($e)');
+        }
+      }
+    }
+    try {
+      return (await _auth.refreshSession()).session ?? _auth.currentSession;
+    } on Object {
+      return _auth.currentSession;
+    }
+  }
+
+  @override
+  Future<void> sendPasswordReset(String email) async {
+    _pendingEmail = email;
+    // No name to apply afterwards — this is a returning user, not a signup.
+    _pendingName = null;
+    _pendingOtpType = OtpType.recovery;
+    await _auth.resetPasswordForEmail(email);
+  }
+
+  @override
+  Future<void> setPassword(String password) async {
+    await _auth.updateUser(UserAttributes(password: password));
+    // Only now is the recovery finished. verifyOtp deliberately leaves the type
+    // alone so the verify screen can still tell which flow it is completing.
+    _pendingOtpType = OtpType.signup;
+  }
+
+  @override
+  bool get isRecoveryPending => _pendingOtpType == OtpType.recovery;
 
   @override
   Future<void> resendOtp() async {
     final email = _pendingEmail;
     if (email == null) return;
-    await _post('/auth/resend-otp', {'email': email});
+    await _auth.resend(type: _pendingOtpType, email: email);
   }
 
   @override
-  Future<AppUser> signInWithGoogle(String idToken) async =>
-      _consumeTokenPair(await _post('/auth/sso/google', {'id_token': idToken}));
+  Future<AppUser> signInWithGoogle(String idToken, {String? nonce}) async {
+    final res = await _signInOrLink(OAuthProvider.google, idToken, nonce);
+    return _require(res.session);
+  }
 
   @override
   Future<AppUser> signInWithApple({
     required String identityToken,
+    String? nonce,
     String? fullName,
-  }) async =>
-      _consumeTokenPair(await _post('/auth/sso/apple', {
-        'identity_token': identityToken,
-        'full_name': ?fullName,
-      }));
+  }) async {
+    final res = await _signInOrLink(OAuthProvider.apple, identityToken, nonce);
+    return _require(res.session);
+  }
+
+  /// A guest who picks Google or Apple keeps what they made: the identity is
+  /// linked to the guest account, which makes it a real one with the same id.
+  ///
+  /// Linking fails when that Google or Apple account already has an Aqademiq
+  /// account of its own, or when manual linking is switched off in Supabase.
+  /// Either way this falls back to signing in exactly as before — the person
+  /// gets their existing account, and the guest data stays where it was.
+  Future<AuthResponse> _signInOrLink(
+    OAuthProvider provider,
+    String idToken,
+    String? nonce,
+  ) async {
+    if (_auth.currentUser?.isAnonymous ?? false) {
+      try {
+        return await _auth.linkIdentityWithIdToken(
+          provider: provider,
+          idToken: idToken,
+          nonce: nonce,
+        );
+      } on AuthException catch (e) {
+        debugPrint('guest link with ${provider.name} not possible: ${e.message}');
+      }
+    }
+    return _auth.signInWithIdToken(provider: provider, idToken: idToken, nonce: nonce);
+  }
 
   @override
   Future<AppUser> linkGuestToAccount({
     required String email,
     required String password,
   }) async {
+    // Email first, on its own: Supabase sends a code to confirm the new address
+    // (the "Change email address" template, which must carry {{ .Token }}).
+    // The password follows once that is verified — see _finishGuestUpgrade.
+    try {
+      await _auth.updateUser(UserAttributes(email: email));
+    } on AuthException catch (e) {
+      if (e.code == 'email_exists' || e.message.contains('already been registered')) {
+        throw const AuthFailure(message: kAccountAlreadyExists);
+      }
+      rethrow;
+    }
     _pendingEmail = email;
-    await _post('/auth/link-guest', {'email': email, 'password': password});
-    // Still a guest until verifyOtp completes; reflect the pending email.
+    // The guest already has a name (or onboarding will ask); the email's
+    // local part is not a better one.
+    _pendingName = null;
+    _pendingPassword = password;
+    _pendingOtpType = OtpType.emailChange;
     final current = _user ?? const AppUser(id: '', name: 'Guest');
     return current.copyWith(email: email);
   }
@@ -378,32 +611,27 @@ class ApiAuthRepository implements AuthRepository {
   @override
   Future<void> signOut() async {
     try {
-      await _post('/auth/signout');
+      await _auth.signOut();
     } on Object {
-      // Ignore — we clear locally regardless.
+      // Ignore — the state stream emits null on SIGNED_OUT regardless.
     }
-    await _tokens.clear();
     _emit(null);
   }
 
   @override
-  void dispose() => _controller.close();
-}
-
-Map<String, dynamic>? _decodeJwt(String token) {
-  final parts = token.split('.');
-  if (parts.length != 3) return null;
-  var payload = parts[1].replaceAll('-', '+').replaceAll('_', '/');
-  switch (payload.length % 4) {
-    case 2:
-      payload += '==';
-    case 3:
-      payload += '=';
+  Future<void> deleteAccount() async {
+    try {
+      await _dio.delete<void>('/profile/account');
+    } on Object {
+      // Even if the server call fails, still sign out locally below.
+    }
+    await signOut();
   }
-  try {
-    return jsonDecode(utf8.decode(base64.decode(payload))) as Map<String, dynamic>;
-  } on Object {
-    return null;
+
+  @override
+  void dispose() {
+    unawaited(_sub.cancel());
+    unawaited(_controller.close());
   }
 }
 
@@ -417,11 +645,7 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     ref.onDispose(repo.dispose);
     return repo;
   }
-  final repo = ApiAuthRepository(
-    ref.watch(dioProvider),
-    ref.watch(tokenStoreProvider),
-  );
-  // Wire the interceptor's session-expiry hook to sign the user out.
+  final repo = ApiAuthRepository(ref.watch(dioProvider));
   ref.watch(authInterceptorProvider).onSessionExpired = repo.handleSessionExpired;
   ref.onDispose(repo.dispose);
   return repo;

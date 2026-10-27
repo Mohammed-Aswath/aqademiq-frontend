@@ -2,11 +2,13 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../data/models/task.dart';
 import '../../features/ada/presentation/ada_screen.dart';
 import '../../features/auth/presentation/guest_ada_prompt.dart';
 import '../../features/auth/presentation/guest_save_prompt.dart';
 import '../../features/auth/presentation/guest_stats_prompt.dart';
 import '../../features/auth/presentation/otp_screen.dart';
+import '../../features/auth/presentation/reset_password_screen.dart';
 import '../../features/auth/presentation/signin_screen.dart';
 import '../../features/auth/presentation/signup_screen.dart';
 import '../../features/auth/presentation/splash_screen.dart';
@@ -15,6 +17,12 @@ import '../../features/feedback/presentation/feedback_board_screen.dart';
 import '../../features/feedback/presentation/feedback_detail_screen.dart';
 import '../../features/focus/presentation/focus_end_screen.dart';
 import '../../features/focus/presentation/timer_screen.dart';
+import '../../features/ice_breakers/presentation/ice_breaker_screen.dart';
+import '../../features/ice_breakers/presentation/ice_breakers_screen.dart';
+import '../../features/import/presentation/calendar_import_screen.dart';
+import '../../features/import/presentation/import_review_screen.dart';
+import '../../features/import/presentation/paste_list_screen.dart';
+import '../../features/import/presentation/reminder_import_screen.dart';
 import '../../features/mood/presentation/mood_evening_screen.dart';
 import '../../features/mood/presentation/mood_morning_screen.dart';
 import '../../features/onboarding/presentation/ada_loading_screen.dart';
@@ -30,8 +38,11 @@ import '../../features/onboarding/presentation/ob_study_screen.dart';
 import '../../features/onboarding/presentation/ob_syllabus_screen.dart';
 import '../../features/plan/presentation/add_task_screen.dart';
 import '../../features/plan/presentation/plan_screen.dart';
+import '../../features/report/presentation/report_settings_screen.dart';
+import '../../features/report/presentation/weekly_report_screen.dart';
 import '../../features/settings/presentation/settings_email_screen.dart';
 import '../../features/settings/presentation/settings_home_screen.dart';
+import '../../features/settings/presentation/settings_memories_screen.dart';
 import '../../features/settings/presentation/settings_notif_screen.dart';
 import '../../features/settings/presentation/settings_profile_screen.dart';
 import '../../features/settings/presentation/settings_sounds_screen.dart';
@@ -49,6 +60,7 @@ abstract final class Routes {
   static const signin = '/signin';
   static const signup = '/signup';
   static const verify = '/verify';
+  static const resetPassword = '/reset-password';
 
   // Onboarding steps.
   static const obAge = '/onboarding/age';
@@ -79,10 +91,32 @@ abstract final class Routes {
   static const settingsProfile = '/settings/profile';
   static const settingsNotif = '/settings/notifications';
   static const settingsSounds = '/settings/prism';
+  static const settingsMemories = '/settings/memories';
   static const settingsEmail = '/settings/email';
 
+  // Calendar import / Reminder import (v2). Each source screen hands off to
+  // the one review screen, which reads the import session provider.
+  static const settingsCalendarImport = '/settings/calendar-import';
+  static const settingsReminderImport = '/settings/reminder-import';
+  static const importReview = '/settings/import/review';
+  static const importPaste = '/settings/import/paste';
+
   // Feedback board (full-screen, pushed over the shell).
+  // Ice Breakers — the tutorial shelf. Full-screen and pushed, not a tab, so
+  // it covers the bottom nav the way the feedback board does. Deep-linkable to
+  // one video so the empty-planner CTA can open exactly the right one.
+  static const iceBreakers = '/ice-breakers';
+  static String iceBreaker(String id) => '/ice-breakers/$id';
+
   static const settingsFeedback = '/settings/feedback';
+
+  /// The weekly report. Deliberately has no `:week` parameter — §6 of the
+  /// design forbids browsing back through past weeks, and a route that cannot
+  /// name another week cannot be talked into showing one.
+  static const weeklyReport = '/report/week';
+
+  /// The report's off switch and the promises beside it.
+  static const settingsReport = '/settings/report';
   static String feedbackPost(String id) => '/settings/feedback/post/$id';
 
   // Mood check-ins (full-screen, time/system-triggered).
@@ -110,6 +144,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.signin, builder: (_, _) => const SigninScreen()),
       GoRoute(path: Routes.signup, builder: (_, _) => const SignupScreen()),
       GoRoute(path: Routes.verify, builder: (_, _) => const OtpScreen()),
+      GoRoute(path: Routes.resetPassword, builder: (_, _) => const ResetPasswordScreen()),
       GoRoute(path: Routes.guestAda, builder: (_, _) => const GuestAdaPrompt()),
       GoRoute(path: Routes.guestStats, builder: (_, _) => const GuestStatsPrompt()),
       GoRoute(path: Routes.guestSave, builder: (_, _) => const GuestSavePrompt()),
@@ -124,7 +159,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.obPeak, builder: (_, _) => const ObPeakScreen()),
       GoRoute(path: Routes.obPrism, builder: (_, _) => const ObPrismScreen()),
       GoRoute(path: Routes.obLoading, builder: (_, _) => const AdaLoadingScreen()),
-      GoRoute(path: Routes.addTask, builder: (_, _) => const AddTaskScreen()),
+      GoRoute(
+        path: Routes.addTask,
+        // `extra` carries the task to edit (null → create a new task).
+        builder: (_, state) => AddTaskScreen(existing: state.extra as Task?),
+      ),
       GoRoute(path: Routes.focusEnd, builder: (_, _) => const FocusEndScreen()),
       GoRoute(path: Routes.moodMorning, builder: (_, _) => const MoodMorningScreen()),
       GoRoute(path: Routes.moodEvening, builder: (_, _) => const MoodEveningScreen()),
@@ -132,8 +171,28 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.settingsProfile, builder: (_, _) => const SettingsProfileScreen()),
       GoRoute(path: Routes.settingsNotif, builder: (_, _) => const NotificationsScreen()),
       GoRoute(path: Routes.settingsSounds, builder: (_, _) => const PrismSettingsScreen()),
+      GoRoute(path: Routes.settingsMemories, builder: (_, _) => const SettingsMemoriesScreen()),
       GoRoute(path: Routes.settingsEmail, builder: (_, _) => const EmailSettingsScreen()),
-      GoRoute(path: Routes.settingsFeedback, builder: (_, _) => const FeedbackBoardScreen()),
+      GoRoute(path: Routes.settingsCalendarImport, builder: (_, _) => const CalendarImportScreen()),
+      GoRoute(path: Routes.settingsReminderImport, builder: (_, _) => const ReminderImportScreen()),
+      GoRoute(path: Routes.importReview, builder: (_, _) => const ImportReviewScreen()),
+      GoRoute(path: Routes.importPaste, builder: (_, _) => const PasteListScreen()),
+      GoRoute(
+      path: Routes.iceBreakers,
+      builder: (_, _) => const IceBreakersScreen(),
+      routes: [
+        // Nested so a back gesture from a video lands on the section rather
+        // than wherever the student happened to open it from.
+        GoRoute(
+          path: ':id',
+          builder: (_, state) =>
+              IceBreakerScreen(id: state.pathParameters['id'] ?? ''),
+        ),
+      ],
+    ),
+    GoRoute(path: Routes.settingsFeedback, builder: (_, _) => const FeedbackBoardScreen()),
+      GoRoute(path: Routes.weeklyReport, builder: (_, _) => const WeeklyReportScreen()),
+      GoRoute(path: Routes.settingsReport, builder: (_, _) => const ReportSettingsScreen()),
       GoRoute(
         path: '/settings/feedback/post/:id',
         builder: (_, state) => FeedbackDetailScreen(id: state.pathParameters['id']!),

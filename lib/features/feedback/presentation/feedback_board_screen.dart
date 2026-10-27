@@ -73,7 +73,7 @@ class _FeedbackBoardScreenState extends ConsumerState<FeedbackBoardScreen> {
   /// may proceed.
   bool _requireAccount(String reason) {
     if (!ref.read(isGuestProvider)) return true;
-    unawaited(showCreateAccountPrompt(context, reason: reason));
+    unawaited(showCreateAccountPrompt(context, ref, reason: reason));
     return false;
   }
 
@@ -110,7 +110,7 @@ class _FeedbackBoardScreenState extends ConsumerState<FeedbackBoardScreen> {
         // 403 (guest) → prompt sign-up and stop; 429 (daily limit) → tell them
         // and stop. Otherwise keep the draft and let them retry.
         if (e is AuthFailure) {
-          unawaited(showCreateAccountPrompt(context, reason: 'post a suggestion'));
+          unawaited(showCreateAccountPrompt(context, ref, reason: 'post a suggestion'));
           return;
         }
         if (e is ServerFailure && e.statusCode == 429) {
@@ -247,7 +247,8 @@ class _FeedbackBoardScreenState extends ConsumerState<FeedbackBoardScreen> {
                     strokeWidth: 2.5,
                   ),
                 ),
-                error: (_, _) => _BoardError(
+                error: (error, _) => _BoardError(
+                  error: error,
                   onRetry: () => ref.invalidate(feedbackPostsProvider),
                 ),
                 data: (posts) => view == FeedbackView.list
@@ -535,7 +536,7 @@ class _IntroCard extends StatelessWidget {
                 onTap: () => unawaited(
                   openExternal(
                     context,
-                    Uri.parse('https://aqademiq.app/research'),
+                    Uri.parse('https://www.aqademiq.com/support'),
                   ),
                 ),
                 child: Text(
@@ -553,7 +554,7 @@ class _IntroCard extends StatelessWidget {
                 onTap: () => unawaited(
                   openExternal(
                     context,
-                    Uri.parse('mailto:hello@aqademiq.app?subject=Bug report'),
+                    Uri.parse('mailto:support@aqademiq.com?subject=Bug report'),
                   ),
                 ),
                 child: Text(
@@ -784,30 +785,55 @@ class _SortButton extends StatelessWidget {
 }
 
 class _BoardError extends StatelessWidget {
-  const _BoardError({required this.onRetry});
+  const _BoardError({required this.onRetry, this.error});
 
   final VoidCallback onRetry;
+  final Object? error;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    // A 401 is not a connectivity problem — telling someone to "try again" when
+    // they simply are not signed in sends them round in circles.
+    final needsAuth = error is AuthFailure;
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.cloud_off_rounded, size: 40, color: colors.textDim),
-          const SizedBox(height: 12),
-          Text(
-            "Couldn't load the board",
-            style: AppText.sans(
-              size: 14,
-              weight: FontWeight.w800,
-              color: colors.text,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              needsAuth ? Icons.lock_outline_rounded : Icons.cloud_off_rounded,
+              size: 40,
+              color: colors.textDim,
             ),
-          ),
-          const SizedBox(height: 12),
-          TextButton(onPressed: onRetry, child: const Text('Try again')),
-        ],
+            const SizedBox(height: 12),
+            Text(
+              needsAuth ? 'Sign in to see the board' : "Couldn't load the board",
+              textAlign: TextAlign.center,
+              style: AppText.sans(
+                size: 14,
+                weight: FontWeight.w800,
+                color: colors.text,
+              ),
+            ),
+            if (needsAuth) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Suggestions and votes are tied to your account.',
+                textAlign: TextAlign.center,
+                style: AppText.sans(size: 11.5, height: 1.4, color: colors.textMed),
+              ),
+            ],
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: needsAuth
+                  ? () => context.push(Routes.signin)
+                  : onRetry,
+              child: Text(needsAuth ? 'Sign in' : 'Try again'),
+            ),
+          ],
+        ),
       ),
     );
   }

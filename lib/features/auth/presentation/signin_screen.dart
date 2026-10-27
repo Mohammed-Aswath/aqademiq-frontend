@@ -1,12 +1,18 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/env/env.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
 import '../../../shared/widgets/app_text_field.dart';
+import '../../../shared/widgets/circle_back_button.dart';
 import '../../../shared/widgets/primary_button.dart';
+import '../../onboarding/onboarding_gate.dart';
 import '../controllers/auth_controller.dart';
 import 'widgets/sso_buttons.dart';
 
@@ -19,8 +25,8 @@ class SigninScreen extends ConsumerStatefulWidget {
 }
 
 class _SigninScreenState extends ConsumerState<SigninScreen> {
-  final _email = TextEditingController(text: 'ridhwan@bits.ac.in');
-  final _password = TextEditingController(text: 'password');
+  final _email = TextEditingController();
+  final _password = TextEditingController();
   bool _obscure = true;
 
   @override
@@ -34,8 +40,103 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
     final ok = await ref
         .read(authControllerProvider.notifier)
         .signIn(email: _email.text, password: _password.text);
-    if (ok && mounted) context.go(Routes.plan);
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
   }
+
+  /// Email a reset code for whatever is in the email field.
+  ///
+  /// Uses that field rather than opening its own prompt: it is directly above
+  /// this link and usually already filled. For an Apple- or Google-only account
+  /// this is the only way to ever obtain an email login, since completing the
+  /// reset creates the email identity it never had.
+  Future<void> _forgotPassword() async {
+    final email = _email.text.trim();
+    final messenger = ScaffoldMessenger.of(context)..hideCurrentSnackBar();
+    if (email.isEmpty || !email.contains('@')) {
+      messenger.showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text('Enter your email above first, then tap Forgot password.'),
+      ));
+      return;
+    }
+
+    final ok = await ref
+        .read(authControllerProvider.notifier)
+        .sendPasswordReset(email);
+    if (!mounted) return;
+
+    if (!ok) {
+      messenger.showSnackBar(SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+      ));
+      return;
+    }
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      content: Text('If $email has an account, a reset code is on its way.'),
+    ));
+    await context.push(Routes.verify);
+  }
+
+  Future<void> _appleSignIn() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithApple();
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else if (ref.read(authControllerProvider).hasError) {
+      // Cancellations leave no error, so only real failures get a snackbar.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
+  }
+
+  /// Apple sign-in is native to Apple platforms; on Android/web it would need
+  /// the web OAuth flow (Services ID), which isn't set up, so hide it there.
+  bool get _appleAvailable =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
+  Future<void> _googleSignIn() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithGoogle();
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else if (ref.read(authControllerProvider).hasError) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
+  }
+
+  /// Native Google sign-in is wired for mobile; hidden until the client IDs are
+  /// configured (and off the web build, which needs the button-render flow).
+  ///
+  /// Apple platforms are checked separately because they need an *iOS* client
+  /// id that Android does not. Offering the button without one is worse than
+  /// hiding it: the SDK cannot present its sheet, never calls back, and the
+  /// screen wedges on `busy` (see Env.hasAppleGoogleSignIn).
+  bool get _googleAvailable =>
+      !kIsWeb &&
+      (_appleAvailable ? Env.hasAppleGoogleSignIn : Env.hasGoogleSignIn);
 
   @override
   Widget build(BuildContext context) {
@@ -50,22 +151,33 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Sign-up and OTP both have one; this screen did not, so anything
+              // that wedged here left no way out at all.
+              Align(
+                alignment: Alignment.centerLeft,
+                child: CircleBackButton(onTap: () => context.pop()),
+              ),
+              const SizedBox(height: 10),
               Text('Welcome.', style: AppText.sans(size: 30, weight: FontWeight.w800, color: colors.text)),
               const SizedBox(height: 4),
               Text('Sign in to continue', style: AppText.sans(size: 12, color: colors.textMed)),
               const SizedBox(height: 22),
-              SsoButton(
-                provider: SsoProvider.apple,
-                label: 'Sign in with Apple',
-                onTap: busy ? null : _signIn,
-              ),
-              const SizedBox(height: 10),
-              SsoButton(
-                provider: SsoProvider.google,
-                label: 'Sign in with Google',
-                onTap: busy ? null : _signIn,
-              ),
-              const SizedBox(height: 18),
+              if (_appleAvailable) ...[
+                SsoButton(
+                  provider: SsoProvider.apple,
+                  label: 'Sign in with Apple',
+                  onTap: busy ? null : _appleSignIn,
+                ),
+                const SizedBox(height: 10),
+              ],
+              if (_googleAvailable) ...[
+                SsoButton(
+                  provider: SsoProvider.google,
+                  label: 'Sign in with Google',
+                  onTap: busy ? null : _googleSignIn,
+                ),
+                const SizedBox(height: 18),
+              ],
               const _OrDivider(),
               const SizedBox(height: 16),
               const FieldLabel('Email'),
@@ -85,9 +197,7 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Password reset arrives with account sync — coming soon.')),
-                  ),
+                  onTap: busy ? null : () => unawaited(_forgotPassword()),
                   child: Text(
                     'Forgot password?',
                     style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.accent),
