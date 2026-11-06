@@ -19,6 +19,13 @@ class TasksRepository {
     return dtos.map((d) => d.toModel()).toList(growable: false);
   }
 
+  /// Occurrences from [from] to [to] inclusive — the reminder scheduler's view,
+  /// which spans a horizon rather than the single day the planner shows.
+  Future<List<Task>> tasksInRange(DateTime from, DateTime to) async {
+    final dtos = await _source.tasksInRange(from, to);
+    return dtos.map((d) => d.toModel()).toList(growable: false);
+  }
+
   Future<Task> create(Task draft) async {
     final dto = await _source.create(draft.toDto());
     return dto.toModel();
@@ -36,6 +43,17 @@ class TasksRepository {
   }
 
   Future<void> delete(String id) => _source.delete(id);
+
+  /// Generate micro-steps for the task occurrence (server-side; Ada or fallback).
+  Future<void> breakdown(String id, DateTime date, {bool refine = false}) =>
+      _source.breakdown(id, date, refine: refine);
+
+  /// Tick a micro-step off, or un-tick it.
+  Future<void> setStepDone(String id, String stepId, {required bool done}) =>
+      _source.setStepDone(id, stepId, done: done);
+
+  /// Drop the occurrence's micro-steps (breakdown toggled off while editing).
+  Future<void> clearSteps(String id) => _source.clearSteps(id);
 
   Future<int> completedThisWeek(DateTime around) =>
       _source.completedThisWeek(around);

@@ -100,6 +100,16 @@ class PrismAudioController extends Notifier<PrismAudioState> {
   String _effectiveLabel(FocusSession session) =>
       session.prismMode ?? ref.read(prismDefaultModeProvider);
 
+  /// This session is in the Prism holdout, so the soundscape stays silent.
+  ///
+  /// The arm is assigned server-side and arrives on the session; the client is
+  /// told, never asked. It is checked at every point audio could start —
+  /// including an explicit mode pick — because a held-out user tapping the
+  /// Prism pill would otherwise quietly re-enter the treatment arm and spoil
+  /// their own data. Nothing is shown about it: §4.3 requires the holdout be
+  /// silent, or awareness becomes the confound it was meant to remove.
+  bool _heldOut(FocusSession session) => session.controlArm;
+
   void _onFocusChanged(FocusSession? prev, FocusSession next) {
     final prevStatus = prev?.status ?? FocusStatus.idle;
     final label = _effectiveLabel(next);
@@ -110,7 +120,7 @@ class PrismAudioController extends Notifier<PrismAudioState> {
       final prevLabel = prev == null ? null : _effectiveLabel(prev);
       final inSession = next.status == FocusStatus.running ||
           next.status == FocusStatus.paused;
-      if (inSession && prevLabel != label) {
+      if (inSession && prevLabel != label && !_heldOut(next)) {
         unawaited(
           _switchMode(label,
               whileFrozen: next.status == FocusStatus.paused),
@@ -134,7 +144,7 @@ class PrismAudioController extends Notifier<PrismAudioState> {
           }
         } else {
           final autoplay = ref.read(prismAutoplayProvider);
-          if (autoplay && label != kPrismNoSound) {
+          if (autoplay && label != kPrismNoSound && !_heldOut(next)) {
             unawaited(_start(label));
           }
         }
@@ -219,6 +229,38 @@ class PrismAudioController extends Notifier<PrismAudioState> {
     }
     await _engine.resume();
     state = PrismAudioState(playing: true, activeMode: label);
+  }
+
+  // ---- Voice input ------------------------------------------------------
+
+  /// True while the soundscape is silent only because a microphone is open.
+  bool _heldForVoice = false;
+
+  /// Silences the soundscape while the student dictates.
+  ///
+  /// Left playing, the microphone hears the music and the transcript fills with
+  /// noise. Only ever pauses what is actually playing, so it cannot start or
+  /// stop a session.
+  Future<void> holdForVoice() async {
+    if (!_engine.isPlaying) return;
+    _heldForVoice = true;
+    await _pauseEngine();
+  }
+
+  /// Undoes [holdForVoice] — unless the session moved on meanwhile.
+  ///
+  /// A session that ended while the mic was open has already stopped the audio
+  /// for good, and one the student froze should stay silent until they resume
+  /// it; bringing the music back in either case would be a surprise.
+  Future<void> releaseAfterVoice() async {
+    if (!_heldForVoice) return;
+    _heldForVoice = false;
+    if (!_audioActive) return;
+    final session = ref.read(focusControllerProvider);
+    if (session.status == FocusStatus.paused) return;
+    // A preview has no session label to fall back on, so the mode that was
+    // actually playing wins.
+    await _resume(state.activeMode ?? _effectiveLabel(session));
   }
 
   Future<void> _stop() async {

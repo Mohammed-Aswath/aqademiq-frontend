@@ -1,12 +1,23 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../../core/theme/app_text.dart';
 import '../../../../data/models/enums.dart';
 import '../../../../data/models/task.dart';
+import '../../../../data/repositories/tags_repository.dart';
+import '../../../../services/voice_input_service.dart';
+import '../../../../shared/widgets/ic.dart';
+import '../../../../shared/widgets/voice_feedback.dart';
+import '../../../../shared/widgets/voice_recording_bar.dart';
+import '../../plan_time.dart';
+import '../../providers/plan_providers.dart';
 import '../../providers/plan_ui_providers.dart';
 import '../pickers/repeat_picker.dart';
+import '../pickers/tag_picker.dart';
 import '../pickers/time_picker.dart';
 
 /// Outcome of the Quick-add sheet: the [TaskDraft] entered, and whether the
@@ -14,8 +25,9 @@ import '../pickers/time_picker.dart';
 /// or quick-create now (`details: false` via send).
 typedef QuickAddResult = ({TaskDraft draft, bool details});
 
-/// Presents the lightweight "Quick add" bar (`plan-quickadd`). Returns the
-/// [QuickAddResult] on send/More, or `null` if dismissed. Keyboard-aware.
+/// Presents the lightweight "Quick add" bar (`plan-quickadd`): docked to the
+/// keyboard (radius 22 on top), riding whatever inset the OS reports. Returns
+/// the [QuickAddResult] on send/More, or `null` if dismissed.
 Future<QuickAddResult?> showQuickAddSheet(BuildContext context) {
   return showModalBottomSheet<QuickAddResult>(
     context: context,
@@ -27,59 +39,130 @@ Future<QuickAddResult?> showQuickAddSheet(BuildContext context) {
   );
 }
 
-class _QuickAddSheet extends StatefulWidget {
+class _QuickAddSheet extends ConsumerStatefulWidget {
   const _QuickAddSheet();
 
   @override
-  State<_QuickAddSheet> createState() => _QuickAddSheetState();
+  ConsumerState<_QuickAddSheet> createState() => _QuickAddSheetState();
 }
 
-class _QuickAddSheetState extends State<_QuickAddSheet> {
+class _QuickAddSheetState extends ConsumerState<_QuickAddSheet> {
   final _controller = TextEditingController();
+  late final _dictation = Dictation(_controller);
+
+  /// Held from [initState] so [dispose] can end a dictation without `ref`.
+  late final VoiceInputController _voice;
+
+  /// Raw picker label — keep the clock string ("2:30 PM"), do not collapse it
+  /// through [DayPartX.fromWire] (that maps unknown values to Anytime).
+  String? _timeLabel;
   DayPart? _dayPart;
   RepeatRule? _repeat;
 
+  /// The study tag picked with the Tag chip. Null until one is picked: the task
+  /// then gets the first tag, exactly as Quick-add always did.
+  String? _tagId;
+
+  @override
+  void initState() {
+    super.initState();
+    _voice = ref.read(voiceInputProvider.notifier);
+  }
+
   @override
   void dispose() {
+    endDictationAfterTeardown(_voice, this);
     _controller.dispose();
     super.dispose();
   }
 
-  static String _dayPartLabel(DayPart p) => switch (p) {
-        DayPart.morning => 'Morning',
-        DayPart.afternoon => 'Afternoon',
-        DayPart.evening => 'Evening',
-        DayPart.anytime => 'Anytime',
-      };
+  /// Opens the mic; the input turns into the recording pill until it closes.
+  /// Words go into the field; the task is only created when the student taps
+  /// send or More.
+  Future<void> _startVoice() async {
+    if (ref.read(voiceInputProvider).isActiveFor(this)) return;
+    _dictation.begin();
+    final problem = await _voice.start(
+      owner: this,
+      // The first tap may sit behind the OS permission prompt; a screen left in
+      // the meantime must not have words written into its disposed field.
+      onWords: (words) {
+        if (mounted) _dictation.show(words);
+      },
+    );
+    if (problem != null && mounted) showVoiceUnavailable(context, problem);
+  }
+
+  /// ✕ — discard what was said and put the field back.
+  void _discardVoice() {
+    unawaited(_voice.cancel(owner: this));
+    _dictation.restore();
+  }
+
+  /// ■ — stop, keeping the words to review.
+  void _stopVoice() => unawaited(_voice.stop(owner: this));
+
+  /// ↑ — stop, wait for the last words, and add the task.
+  Future<void> _sendVoice() async {
+    await _voice.stopAndSettle(owner: this);
+    if (mounted) _submit(details: false);
+  }
 
   void _submit({required bool details}) {
+    // The mic closes now rather than when the sheet finishes animating away.
+    unawaited(_voice.cancel(owner: this));
     Navigator.of(context).pop((
-      draft: TaskDraft(title: _controller.text.trim(), dayPart: _dayPart, repeat: _repeat),
+      draft: TaskDraft(
+        title: _controller.text.trim(),
+        dayPart: _dayPart,
+        timeLabel: _timeLabel,
+        repeat: _repeat,
+        tagId: _tagId,
+      ),
       details: details,
     ));
   }
 
   Future<void> _pickTime() async {
-    final v = await showTimeOfDayPicker(context);
-    if (v != null) setState(() => _dayPart = DayPartX.fromWire(v.toLowerCase()));
+    final v = await showTimeOfDayPicker(context, current: _timeLabel);
+    if (v == null || !mounted) return;
+    // Anchor to an arbitrary date — only the clock / day-part matters here; the
+    // real calendar day is applied in create / Add-task.
+    final resolved = PlanTime.resolve(v, DateTime(2000));
+    setState(() {
+      _timeLabel = v;
+      _dayPart = resolved.dayPart;
+    });
+  }
+
+  Future<void> _pickTag() async {
+    final v = await showTagPicker(context, current: _tagId);
+    if (v != null && mounted) setState(() => _tagId = v);
   }
 
   Future<void> _pickRepeat() async {
-    final v = await showRepeatPicker(context);
-    if (v != null) setState(() => _repeat = v);
+    final v = await showRepeatPicker(
+      context,
+      current: _repeat,
+      date: ref.read(selectedDateProvider),
+    );
+    if (v != null && mounted) setState(() => _repeat = v);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final voice = ref.watch(voiceInputProvider);
+    // A tag deleted elsewhere while this sheet is open falls back to "Tag".
+    final tag = _tagId == null ? null : ref.watch(tagsByIdProvider)[_tagId];
     final keyboard = MediaQuery.viewInsetsOf(context).bottom;
     return Padding(
       padding: EdgeInsets.only(bottom: keyboard),
       child: Container(
         decoration: BoxDecoration(
           color: colors.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(AppRadius.sheetTop)),
-          boxShadow: colors.sheetShadow,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+          boxShadow: const [BoxShadow(color: Color(0x29000000), blurRadius: 40, offset: Offset(0, -8))],
         ),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
         child: SafeArea(
@@ -99,7 +182,35 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
                   ),
                 ),
               ),
-              _InputPill(controller: _controller, colors: colors),
+              AnimatedSwitcher(
+                duration: MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : const Duration(milliseconds: 220),
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    scale: Tween<double>(begin: 0.96, end: 1).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: voice.isActiveFor(this)
+                    ? VoiceRecordingBar(
+                        key: const ValueKey('recording'),
+                        listening: voice.isListeningFor(this),
+                        level: _voice.level,
+                        onDiscard: _discardVoice,
+                        onStop: _stopVoice,
+                        onSend: () => unawaited(_sendVoice()),
+                      )
+                    : _InputPill(
+                        key: const ValueKey('typing'),
+                        controller: _controller,
+                        colors: colors,
+                        voiceAvailable:
+                            voice.unavailable != VoiceUnavailable.unsupported,
+                        onSpeak: () => unawaited(_startVoice()),
+                      ),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -108,9 +219,21 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
-                          _ContextChip(icon: Icons.schedule, label: _dayPart == null ? 'Anytime' : _dayPartLabel(_dayPart!), colors: colors, onTap: _pickTime),
+                          _ContextChip(
+                            icon: 'schedule',
+                            label: _timeLabel ?? 'Anytime',
+                            colors: colors,
+                            onTap: _pickTime,
+                          ),
                           const SizedBox(width: 6),
-                          _ContextChip(icon: Icons.repeat, label: repeatRuleLabel(_repeat), colors: colors, onTap: _pickRepeat),
+                          _ContextChip(
+                            icon: 'sell',
+                            label: tag?.label ?? 'Tag',
+                            colors: colors,
+                            onTap: _pickTag,
+                          ),
+                          const SizedBox(width: 6),
+                          _ContextChip(icon: 'repeat', label: repeatRuleLabel(_repeat), colors: colors, onTap: _pickRepeat),
                         ],
                       ),
                     ),
@@ -131,10 +254,20 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
 
 /// The "Just one thing to do…" input pill with a trailing mic icon.
 class _InputPill extends StatelessWidget {
-  const _InputPill({required this.controller, required this.colors});
+  const _InputPill({
+    required this.controller,
+    required this.colors,
+    required this.voiceAvailable,
+    required this.onSpeak,
+    super.key,
+  });
 
   final TextEditingController controller;
   final AppColors colors;
+
+  /// False only on a phone with no speech recognizer.
+  final bool voiceAvailable;
+  final VoidCallback onSpeak;
 
   @override
   Widget build(BuildContext context) {
@@ -151,24 +284,30 @@ class _InputPill extends StatelessWidget {
               controller: controller,
               autofocus: true,
               cursorColor: colors.accent,
-              style: AppText.sans(size: 14, color: colors.text),
+              style: AppText.sans(size: 17, color: colors.text),
               decoration: InputDecoration(
                 isDense: true,
                 isCollapsed: true,
                 border: InputBorder.none,
                 hintText: 'Just one thing to do…',
-                hintStyle: AppText.sans(size: 14, color: colors.textDim),
+                hintStyle: AppText.sans(size: 17, color: colors.textDim),
               ),
             ),
           ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Voice capture is coming soon.')),
+          if (voiceAvailable) ...[
+            const SizedBox(width: 10),
+            Semantics(
+              button: true,
+              label: 'Add a task by voice',
+              excludeSemantics: true,
+              onTap: onSpeak,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onSpeak,
+                child: Ic('mic', size: 19, color: colors.accent),
+              ),
             ),
-            child: Icon(Icons.mic, size: 19, color: colors.accent),
-          ),
+          ],
         ],
       ),
     );
@@ -184,32 +323,39 @@ class _ContextChip extends StatelessWidget {
     this.onTap,
   });
 
-  final IconData icon;
+  /// A design icon name (`schedule`).
+  final String icon;
   final String label;
   final AppColors colors;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: colors.bg,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 13, color: colors.textMed),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: AppText.sans(size: 10.5, weight: FontWeight.w700, color: colors.textMed),
-            ),
-          ],
+    return Semantics(
+      button: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          height: 36,
+          decoration: BoxDecoration(
+            color: colors.bg,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Ic(icon, size: 16, color: colors.textMed),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                maxLines: 1,
+                softWrap: false,
+                style: AppText.sans(size: 13, weight: FontWeight.w700, color: colors.textMed),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -225,15 +371,23 @@ class _MorePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: 'More options',
+      excludeSemantics: true,
       onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: colors.bg,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 36,
+          decoration: BoxDecoration(
+            color: colors.bg,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          alignment: Alignment.center,
+          child: Ic('more', size: 19, color: colors.textMed),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Icon(Icons.more_horiz, size: 15, color: colors.textMed),
       ),
     );
   }
@@ -248,14 +402,20 @@ class _SendButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: 'Add task',
+      excludeSemantics: true,
       onTap: onTap,
-      child: Container(
-        width: 38,
-        height: 38,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(color: colors.ink, shape: BoxShape.circle),
-        child: const Icon(Icons.arrow_upward, size: 18, color: Colors.white),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 38,
+          height: 38,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: colors.ink, shape: BoxShape.circle),
+          child: const Ic('send', size: 18, color: Colors.white),
+        ),
       ),
     );
   }

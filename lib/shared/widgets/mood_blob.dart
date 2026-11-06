@@ -1,10 +1,15 @@
 import 'package:flutter/widgets.dart';
 
+import '../../core/theme/app_mood.dart';
 import '../mascot/ada_mascot.dart';
 
 /// The MOODS scale (0 Rough … 4 Great), label + nominal color (prototype MOODS).
 class MoodScale {
   static const List<String> labels = ['Rough', 'Tired', 'OK', 'Good', 'Great'];
+
+  /// Each mood's colour (v11 `MOODS`) — the border tone of its cube. The
+  /// shipped ramp itself, so the check-ins and the weekly report can't drift.
+  static const List<Color> colors = AppMood.ramp;
   static const List<AdaExpr> _expr = [
     AdaExpr.sad,
     AdaExpr.meh,

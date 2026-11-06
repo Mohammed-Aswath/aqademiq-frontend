@@ -9,10 +9,37 @@ import 'mock_latency.dart';
 /// `Env.useMocks`; widgets never see this layer.
 abstract interface class TasksSource {
   Future<List<TaskDto>> tasksForDay(DateTime date);
+
+  /// Occurrences from [from] to [to] inclusive (`GET /tasks?from=&to=`). Used
+  /// by the local reminder scheduler, which needs a horizon rather than a day.
+  Future<List<TaskDto>> tasksInRange(DateTime from, DateTime to);
+
   Future<TaskDto> create(TaskDto input);
   Future<TaskDto> update(TaskDto task);
   Future<TaskDto> move(String id, DateTime newDate);
   Future<void> delete(String id);
+
+  /// `POST /tasks/{id}/breakdown` — generate micro-steps for the occurrence
+  /// (Ada, or a server-side fallback). The steps are attached server-side and
+  /// come back on the next `tasksForDay` as the task's subtasks.
+  ///
+  /// [refine] is "break down more": the server hands the task's current steps to
+  /// the model and asks it to split each one, so the result is genuinely finer
+  /// rather than another breakdown of the same shape.
+  Future<void> breakdown(String id, DateTime date, {bool refine});
+
+  /// `PATCH /tasks/{id}/steps/{stepId}` — tick a micro-step off, or un-tick it.
+  ///
+  /// `done` is explicit rather than a toggle so a retried request cannot flip
+  /// the step back to where it started.
+  Future<void> setStepDone(String id, String stepId, {required bool done});
+
+  /// `DELETE /tasks/{id}/steps` — drop the occurrence's micro-steps.
+  ///
+  /// Backs turning the breakdown toggle off while editing: the switch has to
+  /// actually remove the steps, or it reads "off" while the plan still shows
+  /// microtasks and the next save appends a second set on top.
+  Future<void> clearSteps(String id);
 
   /// Count of completed tasks in the Mon–Sun week containing [around].
   Future<int> completedThisWeek(DateTime around);
@@ -41,6 +68,20 @@ class MockTasksSource implements TasksSource {
       }
     }
     return mockDelay(List<TaskDto>.unmodifiable([...base, ...recurring]));
+  }
+
+  @override
+  Future<List<TaskDto>> tasksInRange(DateTime from, DateTime to) async {
+    final out = <TaskDto>[];
+    var day = _dayOnly(from);
+    final last = _dayOnly(to);
+    while (!day.isAfter(last)) {
+      out.addAll(await tasksForDay(day));
+      // Re-normalise each step: adding 24h across a DST boundary lands at
+      // 01:00, and `_key` would then bucket the wrong day.
+      day = DateTime(day.year, day.month, day.day + 1);
+    }
+    return List<TaskDto>.unmodifiable(out);
   }
 
   /// Whether a recurring [base] task lands on [day] (excluding its own start
@@ -119,6 +160,66 @@ class MockTasksSource implements TasksSource {
   }
 
   @override
+  Future<void> setStepDone(String id, String stepId, {required bool done}) {
+    for (final entry in _byDay.entries) {
+      final i = entry.value.indexWhere((t) => t.id == id);
+      if (i >= 0) {
+        final t = entry.value[i];
+        entry.value[i] = t.copyWith(
+          subtasks: [
+            for (final s in t.subtasks)
+              if (s.id == stepId) s.copyWith(done: done) else s,
+          ],
+        );
+        break;
+      }
+    }
+    return mockDelayVoid();
+  }
+
+  @override
+  Future<void> clearSteps(String id) {
+    for (final entry in _byDay.entries) {
+      final i = entry.value.indexWhere((t) => t.id == id);
+      if (i >= 0) {
+        entry.value[i] = entry.value[i].copyWith(subtasks: const []);
+        break;
+      }
+    }
+    return mockDelayVoid();
+  }
+
+  @override
+  Future<void> breakdown(String id, DateTime date, {bool refine = false}) async {
+    for (final list in _byDay.values) {
+      final i = list.indexWhere((t) => t.id == id);
+      if (i >= 0) {
+        final t = list[i];
+        // mock == real (README seam 3): refining REPLACES the current steps
+        // with a finer set, rather than leaving them as they are. A mock that
+        // no-ops here would hide exactly the bug this parameter exists to fix.
+        if (refine && t.subtasks.isNotEmpty) {
+          list[i] = t.copyWith(subtasks: [
+            SubtaskDto(id: '$id-r1', title: 'Re-read the brief and list every deliverable'),
+            SubtaskDto(id: '$id-r2', title: 'Mark which deliverables you can already do'),
+            SubtaskDto(id: '$id-r3', title: 'Draft the section you understand best'),
+            SubtaskDto(id: '$id-r4', title: 'Work the parts you flagged as unclear'),
+            SubtaskDto(id: '$id-r5', title: 'Check the draft against the brief line by line'),
+          ]);
+        } else if (t.subtasks.isEmpty) {
+          list[i] = t.copyWith(subtasks: [
+            SubtaskDto(id: '$id-s1', title: 'List what the brief actually asks for'),
+            SubtaskDto(id: '$id-s2', title: 'Draft the part you understand best'),
+            SubtaskDto(id: '$id-s3', title: 'Fill the gaps and check it against the brief'),
+          ]);
+        }
+        break;
+      }
+    }
+    return mockDelayVoid();
+  }
+
+  @override
   Future<int> completedThisWeek(DateTime around) async {
     final monday = _dayOnly(around).subtract(Duration(days: _dayOnly(around).weekday - 1));
     var count = 0;
@@ -142,7 +243,22 @@ class ApiTasksSource implements TasksSource {
   @override
   Future<List<TaskDto>> tasksForDay(DateTime date) async {
     final body = await _dio.getMap('/tasks', query: {'date': ymd(date)});
-    return listOf(body, 'tasks').map(_occToDto).toList(growable: false);
+    return listOf(body, 'tasks')
+        .map((j) => _occToDto(j, fallbackDate: date))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<TaskDto>> tasksInRange(DateTime from, DateTime to) async {
+    final body = await _dio.getMap(
+      '/tasks',
+      query: {'from': ymd(from), 'to': ymd(to)},
+    );
+    // Every occurrence in a range response carries its own date in the id, so
+    // the fallback is only a guard against a malformed row.
+    return listOf(body, 'tasks')
+        .map((j) => _occToDto(j, fallbackDate: from))
+        .toList(growable: false);
   }
 
   @override
@@ -151,23 +267,41 @@ class ApiTasksSource implements TasksSource {
       'title': input.title,
       'date': ymd(input.date),
       if (input.tagId.isNotEmpty) 'category': input.tagId,
+      // Omitted rather than sent as null when there is no subject: the backend
+      // treats an absent key as "no subject", which is what the picker's own
+      // none option means.
+      if (input.subjectId != null && input.subjectId!.isNotEmpty)
+        'subject_id': input.subjectId,
+      if (input.note != null) 'note': input.note,
       if (input.durationMin != null) 'duration_seconds': input.durationMin! * 60,
       if (input.startTime != null) 'scheduled_at': naiveIso(input.startTime!),
+      // The bucket persists on its own column now, so Morning/Afternoon/Evening
+      // survive without a specific time (no more Anytime fallback).
+      'part_of_day': input.timeOfDay ?? 'anytime',
       if (input.repeat != null)
         'repeat': _repeatToWire(input.repeat!)
       else
         'repeat': {'kind': 'none'},
     };
-    return _occToDto(await _dio.postMap('/tasks', body));
+    return _occToDto(await _dio.postMap('/tasks', body), fallbackDate: input.date);
   }
 
   @override
   Future<TaskDto> update(TaskDto task) async {
     final body = <String, dynamic>{
+      'title': task.title,
       'status': task.done ? 'COMPLETE' : 'PENDING',
+      if (task.tagId.isNotEmpty) 'category': task.tagId,
+      // Always sent, null for "no subject": the edit screen's none option has
+      // to be able to clear one. Every task handed in here was read from the
+      // server, so for an untouched task this simply repeats what it holds.
+      'subject_id': (task.subjectId?.isNotEmpty ?? false) ? task.subjectId : null,
+      'note': task.note ?? '',
+      if (task.durationMin != null) 'duration_seconds': task.durationMin! * 60,
       if (task.startTime != null) 'scheduled_at': naiveIso(task.startTime!),
+      'part_of_day': task.timeOfDay ?? 'anytime',
     };
-    return _occToDto(await _dio.patchMap('/tasks/${task.id}', body));
+    return _occToDto(await _dio.patchMap('/tasks/${task.id}', body), fallbackDate: task.date);
   }
 
   @override
@@ -191,6 +325,26 @@ class ApiTasksSource implements TasksSource {
   Future<void> delete(String id) => _dio.deleteMap('/tasks/$id');
 
   @override
+  Future<void> breakdown(String id, DateTime date, {bool refine = false}) async {
+    await _dio.postMap('/tasks/$id/breakdown', {
+      'date': ymd(date),
+      if (refine) 'refine': true,
+    });
+  }
+
+  @override
+  Future<void> setStepDone(String id, String stepId, {required bool done}) async {
+    await _dio.patchMap('/tasks/$id/steps/$stepId', {'done': done});
+  }
+
+  @override
+  Future<void> clearSteps(String id) async {
+    // The occurrence id already carries the date for a repeating task
+    // ("<id>@<yyyy-MM-dd>"), so only that day's steps are removed.
+    await _dio.deleteMap('/tasks/$id/steps');
+  }
+
+  @override
   Future<int> completedThisWeek(DateTime around) async {
     final body = await _dio.getMap('/tasks/history/completions');
     final monday = mondayOf(around);
@@ -205,13 +359,13 @@ class ApiTasksSource implements TasksSource {
 
   // --- wire mapping ---------------------------------------------------------
 
-  TaskDto _occToDto(Map<String, dynamic> j) {
+  TaskDto _occToDto(Map<String, dynamic> j, {DateTime? fallbackDate}) {
     final id = j['id'] as String? ?? '';
-    final scheduledAt = parseDateTime(j['scheduled_at']);
-    final date = dateFromOccurrenceId(id) ??
-        (scheduledAt != null
-            ? DateTime(scheduledAt.year, scheduledAt.month, scheduledAt.day)
-            : DateTime.now());
+    // Prefer the occurrence-id date, then the caller's day (list/create), so
+    // API `scheduled_at: "HH:mm"` can be anchored to a real calendar day.
+    final rawDate = dateFromOccurrenceId(id) ?? fallbackDate ?? DateTime.now();
+    final date = DateTime(rawDate.year, rawDate.month, rawDate.day);
+    final scheduledAt = parseDateTime(j['scheduled_at'], onDate: date);
     final durSec = (j['duration_seconds'] as num?)?.toInt();
     final steps = (j['steps'] as List?) ?? const [];
     final repeat = _repeatFromWire(j['repeat']);
@@ -220,6 +374,12 @@ class ApiTasksSource implements TasksSource {
       title: j['title'] as String? ?? '',
       tagId: j['category'] as String? ?? '',
       date: date,
+      note: (j['note'] as String?)?.isNotEmpty ?? false ? j['note'] as String : null,
+      // The server has always returned this; nothing read it.
+      subjectId: j['subject_id'] as String?,
+      // Time-of-day bucket now round-trips via its own field, so a bucket task
+      // (no scheduled_at) still regroups correctly instead of falling to Anytime.
+      timeOfDay: j['part_of_day'] as String?,
       startTime: scheduledAt,
       durationMin: durSec == null ? null : (durSec / 60).round(),
       repeat: repeat,

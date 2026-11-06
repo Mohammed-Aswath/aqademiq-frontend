@@ -24,6 +24,73 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- Google Sign-In callback. Replace the scheme below with your iOS OAuth
+	     client's REVERSED_CLIENT_ID: take the iOS client ID
+	     (xxxx-yyyy.apps.googleusercontent.com) and write it reversed as
+	     com.googleusercontent.apps.xxxx-yyyy. Without this, Google sign-in on
+	     iOS cannot return to the app. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.233194050188-27sijfj5tsrnd9efqitt00hi0mh4svt5</string>
+			</array>
+		</dict>
+		<!-- One scheme, two callers.
+
+		     The ambient surfaces speak in intent (aqademiq://focus, ://plan,
+		     ://stats) rather than in route strings, so renaming a route cannot
+		     break a widget already sitting on someone's home screen. Referrals
+		     use the same scheme (aqademiq://join?ref=CODE). iOS matches on the
+		     scheme alone, so registering it twice would be a no-op with two
+		     names for one thing.
+
+		     The https form is deliberately NOT registered here: Universal Links
+		     need the com.apple.developer.associated-domains entitlement, which
+		     must also be enabled on the provisioning profile. Adding it before
+		     the profile has the capability fails the archive, so it is left for
+		     whoever hosts apple-app-site-association to turn on together. -->
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.r13.aqademiq.deeplinks</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>aqademiq</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Off, deliberately.
+	
+	     With a Router-based app this defaults ON, and it hands every incoming
+	     aqademiq:// URL to go_router as a literal location. A widget tap then
+	     cold-launched the app straight into
+	     "GoException: no routes for location: aqademiq://focus/start5", because
+	     the surfaces speak in intent and have never spoken in route strings —
+	     that is the whole point of them. AmbientPlugin.handle(url:) translates,
+	     and app_links still receives referral links through the plugin
+	     callback, which this flag does not touch. -->
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Aqademiq uses the microphone so you can speak to Ada and add tasks by voice. You see the words before anything is sent.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Aqademiq turns what you say into text in the message box, so you can read and edit it before sending.</string>
+	<!-- Settings → Calendar import / Reminder import (DeviceImportPlugin.swift).
+	     iOS 17+ reads the FullAccess keys; earlier versions the plain ones. A
+	     missing key is a crash on the first request, so all four stay. -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Aqademiq reads your calendars when you use Calendar import, so classes and events you pick become tasks in your plan. It never changes your calendar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Aqademiq reads your calendars when you use Calendar import, so classes and events you pick become tasks in your plan. It never changes your calendar.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Aqademiq reads your reminders when you use Reminder import, so the ones you pick become tasks in your plan. It never changes your reminders.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Aqademiq reads your reminders when you use Reminder import, so the ones you pick become tasks in your plan. It never changes your reminders.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -49,9 +116,19 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Without this ActivityKit refuses every request with "Target does not
+	     include NSSupportsLiveActivities plist key" — the session is fine, the
+	     lock screen and the Dynamic Island simply never appear. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<!-- Lets a Freeze taken on the lock screen update the activity without the
+	     app being brought to the foreground. -->
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>

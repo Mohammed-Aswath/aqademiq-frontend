@@ -1,13 +1,20 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/env/env.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
 import '../../../shared/widgets/app_text_field.dart';
 import '../../../shared/widgets/primary_button.dart';
+import '../../freeze/presentation/widgets/fz_widgets.dart';
+import '../../onboarding/onboarding_gate.dart';
 import '../controllers/auth_controller.dart';
+import 'widgets/password_eye.dart';
 import 'widgets/sso_buttons.dart';
 
 /// FRAMES `auth` — Sign in (email + password, with SSO).
@@ -19,8 +26,8 @@ class SigninScreen extends ConsumerStatefulWidget {
 }
 
 class _SigninScreenState extends ConsumerState<SigninScreen> {
-  final _email = TextEditingController(text: 'ridhwan@bits.ac.in');
-  final _password = TextEditingController(text: 'password');
+  final _email = TextEditingController();
+  final _password = TextEditingController();
   bool _obscure = true;
 
   @override
@@ -34,8 +41,103 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
     final ok = await ref
         .read(authControllerProvider.notifier)
         .signIn(email: _email.text, password: _password.text);
-    if (ok && mounted) context.go(Routes.plan);
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
   }
+
+  /// Email a reset code for whatever is in the email field.
+  ///
+  /// Uses that field rather than opening its own prompt: it is directly above
+  /// this link and usually already filled. For an Apple- or Google-only account
+  /// this is the only way to ever obtain an email login, since completing the
+  /// reset creates the email identity it never had.
+  Future<void> _forgotPassword() async {
+    final email = _email.text.trim();
+    final messenger = ScaffoldMessenger.of(context)..hideCurrentSnackBar();
+    if (email.isEmpty || !email.contains('@')) {
+      messenger.showSnackBar(const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text('Enter your email above first, then tap Forgot password.'),
+      ));
+      return;
+    }
+
+    final ok = await ref
+        .read(authControllerProvider.notifier)
+        .sendPasswordReset(email);
+    if (!mounted) return;
+
+    if (!ok) {
+      messenger.showSnackBar(SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+      ));
+      return;
+    }
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      content: Text('If $email has an account, a reset code is on its way.'),
+    ));
+    await context.push(Routes.verify);
+  }
+
+  Future<void> _appleSignIn() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithApple();
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else if (ref.read(authControllerProvider).hasError) {
+      // Cancellations leave no error, so only real failures get a snackbar.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
+  }
+
+  /// Apple sign-in is native to Apple platforms; on Android/web it would need
+  /// the web OAuth flow (Services ID), which isn't set up, so hide it there.
+  bool get _appleAvailable =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
+  Future<void> _googleSignIn() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithGoogle();
+    if (!mounted) return;
+    if (ok) {
+      await routeAfterAuth(context, ref);
+    } else if (ref.read(authControllerProvider).hasError) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
+  }
+
+  /// Native Google sign-in is wired for mobile; hidden until the client IDs are
+  /// configured (and off the web build, which needs the button-render flow).
+  ///
+  /// Apple platforms are checked separately because they need an *iOS* client
+  /// id that Android does not. Offering the button without one is worse than
+  /// hiding it: the SDK cannot present its sheet, never calls back, and the
+  /// screen wedges on `busy` (see Env.hasAppleGoogleSignIn).
+  bool get _googleAvailable =>
+      !kIsWeb &&
+      (_appleAvailable ? Env.hasAppleGoogleSignIn : Env.hasGoogleSignIn);
 
   @override
   Widget build(BuildContext context) {
@@ -50,22 +152,36 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Welcome.', style: AppText.sans(size: 30, weight: FontWeight.w800, color: colors.text)),
+              // Sign-up and OTP both have one; this screen did not, so anything
+              // that wedged here left no way out at all.
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FzHeadButton(icon: 'back', fill: FzFill.well, onTap: () => context.pop()),
+              ),
+              const SizedBox(height: 16),
+              Text('Welcome.', style: AppText.sans(size: 34, weight: FontWeight.w800, height: 1.2, color: colors.text)),
               const SizedBox(height: 4),
-              Text('Sign in to continue', style: AppText.sans(size: 12, color: colors.textMed)),
+              Text(
+                'Sign in to continue',
+                style: AppText.sans(size: 17, weight: FontWeight.w500, color: colors.textMed),
+              ),
               const SizedBox(height: 22),
-              SsoButton(
-                provider: SsoProvider.apple,
-                label: 'Sign in with Apple',
-                onTap: busy ? null : _signIn,
-              ),
-              const SizedBox(height: 10),
-              SsoButton(
-                provider: SsoProvider.google,
-                label: 'Sign in with Google',
-                onTap: busy ? null : _signIn,
-              ),
-              const SizedBox(height: 18),
+              if (_appleAvailable) ...[
+                SsoButton(
+                  provider: SsoProvider.apple,
+                  label: 'Sign in with Apple',
+                  onTap: busy ? null : _appleSignIn,
+                ),
+                SizedBox(height: _googleAvailable ? 10 : 18),
+              ],
+              if (_googleAvailable) ...[
+                SsoButton(
+                  provider: SsoProvider.google,
+                  label: 'Sign in with Google',
+                  onTap: busy ? null : _googleSignIn,
+                ),
+                const SizedBox(height: 18),
+              ],
               const _OrDivider(),
               const SizedBox(height: 16),
               const FieldLabel('Email'),
@@ -75,41 +191,43 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
               AppTextField(
                 controller: _password,
                 obscureText: _obscure,
-                suffix: IconButton(
-                  icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, size: 17, color: colors.textMed),
-                  onPressed: () => setState(() => _obscure = !_obscure),
-                ),
+                suffix: PasswordEye(obscured: _obscure, onTap: () => setState(() => _obscure = !_obscure)),
               ),
               const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Password reset arrives with account sync — coming soon.')),
-                  ),
-                  child: Text(
-                    'Forgot password?',
-                    style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.accent),
+                  onTap: busy ? null : () => unawaited(_forgotPassword()),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'Forgot password?',
+                      style: AppText.sans(size: 15, weight: FontWeight.w700, color: colors.accent),
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 10),
               PrimaryButton(label: busy ? 'Signing in…' : 'Sign in →', onPressed: busy ? null : _signIn),
               const SizedBox(height: 14),
               Center(
                 child: GestureDetector(
-                  onTap: () => context.push(Routes.signup),
-                  child: Text.rich(
-                    TextSpan(
-                      text: 'New here? ',
-                      style: AppText.sans(size: 11.5, color: colors.textMed),
-                      children: [
-                        TextSpan(
-                          text: 'Create an account',
-                          style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.text),
-                        ),
-                      ],
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => unawaited(context.push(Routes.signup)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text.rich(
+                      TextSpan(
+                        text: 'New here? ',
+                        style: AppText.sans(size: 15, weight: FontWeight.w500, color: colors.textMed),
+                        children: [
+                          TextSpan(
+                            text: 'Create an account',
+                            style: AppText.sans(size: 15, weight: FontWeight.w700, color: colors.text),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -133,7 +251,7 @@ class _OrDivider extends StatelessWidget {
         Expanded(child: Container(height: 1, color: colors.border)),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Text('or email', style: AppText.sans(size: 11, color: colors.textDim)),
+          child: Text('or email', style: AppText.sans(size: 15, weight: FontWeight.w500, color: colors.textDim)),
         ),
         Expanded(child: Container(height: 1, color: colors.border)),
       ],

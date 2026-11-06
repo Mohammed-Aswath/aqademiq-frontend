@@ -4,13 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/error/failure.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
 import '../../../data/auth/auth_repository.dart';
-import '../../../shared/widgets/circle_back_button.dart';
 import '../../../shared/widgets/primary_button.dart';
+import '../../freeze/presentation/widgets/fz_widgets.dart';
+import '../../onboarding/onboarding_gate.dart';
 import '../controllers/auth_controller.dart';
 import 'widgets/otp_field.dart';
 
@@ -56,10 +56,23 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 
   Future<void> _verify() async {
     if (_code.length != 6) return;
+    // Read before verifying, which clears it.
+    final upgradingGuest = ref.read(authRepositoryProvider).isGuestUpgradePending;
     final ok = await ref.read(authControllerProvider.notifier).verify(_code);
     if (!mounted) return;
     if (ok) {
-      context.go(Routes.obAge);
+      // A recovery code proves the address, it does not finish anything: the
+      // account still has no usable password until the next screen sets one.
+      // Sending it to onboarding instead would leave that half-done.
+      if (ref.read(authRepositoryProvider).isRecoveryPending) {
+        context.go(Routes.resetPassword);
+      } else if (upgradingGuest) {
+        // Same account, now with an email. One that was already set up as a
+        // guest goes back into the app; one that was not, into onboarding.
+        unawaited(routeAfterAuth(context, ref));
+      } else {
+        context.go(Routes.obAge);
+      }
     } else {
       _showError(ref.read(authControllerProvider).error);
     }
@@ -80,10 +93,11 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   }
 
   void _showError(Object? error) {
-    final message =
-        error is Failure ? error.message : 'Invalid or expired code.';
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(authErrorMessage(error)),
+      ),
     );
   }
 
@@ -104,14 +118,15 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
             children: [
               Align(
                 alignment: Alignment.centerLeft,
-                child: CircleBackButton(onTap: () => context.pop()),
+                child: FzHeadButton(icon: 'back', fill: FzFill.well, onTap: () => context.pop()),
               ),
               const SizedBox(height: 20),
               Text(
                 "Verify it's you",
                 style: AppText.sans(
-                  size: 28,
+                  size: 34,
                   weight: FontWeight.w800,
+                  height: 1.2,
                   color: colors.text,
                 ),
               ),
@@ -119,12 +134,12 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
               Text.rich(
                 TextSpan(
                   text: 'We sent a 6-digit code to\n',
-                  style: AppText.sans(size: 12.5, height: 1.6, color: colors.textMed),
+                  style: AppText.sans(size: 17, weight: FontWeight.w500, height: 1.6, color: colors.textMed),
                   children: [
                     TextSpan(
                       text: email,
                       style: AppText.sans(
-                        size: 12.5,
+                        size: 17,
                         weight: FontWeight.w700,
                         color: colors.text,
                       ),
@@ -149,18 +164,20 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
               const SizedBox(height: 16),
               Center(
                 child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: canResend ? _resend : null,
                   child: Text.rich(
                     TextSpan(
                       text: "Didn't get a code? ",
-                      style: AppText.sans(size: 11.5, height: 1.7, color: colors.textMed),
+                      style: AppText.sans(size: 15, weight: FontWeight.w500, height: 1.7, color: colors.textMed),
                       children: [
                         TextSpan(
                           text: canResend ? 'Resend' : 'Resend in 0:${_cooldown.toString().padLeft(2, '0')}',
                           style: AppText.sans(
-                            size: 11.5,
+                            size: 15,
                             weight: FontWeight.w700,
-                            color: canResend ? colors.accent : colors.textMed,
+                            height: 1.7,
+                            color: colors.accent,
                           ),
                         ),
                       ],

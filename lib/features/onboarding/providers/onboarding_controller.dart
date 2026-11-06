@@ -1,9 +1,11 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/env/env.dart';
 import '../../../data/auth/auth_repository.dart';
 import '../../../data/repositories/onboarding_repository.dart';
 import '../../../data/repositories/subjects_repository.dart';
+import '../../../services/haptics/haptics_service.dart';
 
 /// The multi-step onboarding draft (README §6: name, subjects, moods, peak time,
 /// goal, prism) plus the PDPL age + consent captured on the first two steps
@@ -18,11 +20,18 @@ class OnboardingDraft {
     this.referral = '',
     this.name = '',
     this.level = 'Undergraduate',
-    this.subjects = const ['Engineering', 'CS'],
-    this.subjectMoods = const {'Engineering': 2, 'Computer Science': 4},
-    this.peakTimes = const ['Afternoon'],
+    this.subjects = const [],
+    this.subjectMoods = const {},
+    this.peakTimes = const [],
     this.focusGoalHrs = 3,
     this.prismMode = 'Deep Work',
+    this.materials = const [],
+    this.heardFrom,
+    this.heardFromOther = '',
+    this.hasStudyHours = true,
+    this.studyDays = const {1, 2, 3, 4, 5},
+    this.studyFromMin = 9 * 60,
+    this.studyUntilMin = 13 * 60,
   });
 
   /// Age entered on the age gate (`ob-age`). Null until the user enters one.
@@ -44,6 +53,23 @@ class OnboardingDraft {
   final double focusGoalHrs;
   final String prismMode;
 
+  /// Syllabus/notes picked on the upload step, uploaded to the first created
+  /// subject once [OnboardingController.finish] provisions subjects server-side.
+  final List<XFile> materials;
+
+  /// v2 — How did you hear about us? The chip's label (`heardFromSlugs`),
+  /// null when skipped.
+  final String? heardFrom;
+  final String heardFromOther;
+
+  /// v2 — Study hours. False after "I don't have set hours".
+  final bool hasStudyHours;
+
+  /// ISO weekdays, 1 = Monday. Weekdays by default (OB_STUDY).
+  final Set<int> studyDays;
+  final int studyFromMin;
+  final int studyUntilMin;
+
   OnboardingDraft copyWith({
     int? age,
     bool? consentGiven,
@@ -56,6 +82,14 @@ class OnboardingDraft {
     List<String>? peakTimes,
     double? focusGoalHrs,
     String? prismMode,
+    List<XFile>? materials,
+    String? heardFrom,
+    bool clearHeardFrom = false,
+    String? heardFromOther,
+    bool? hasStudyHours,
+    Set<int>? studyDays,
+    int? studyFromMin,
+    int? studyUntilMin,
   }) {
     return OnboardingDraft(
       age: age ?? this.age,
@@ -69,6 +103,13 @@ class OnboardingDraft {
       peakTimes: peakTimes ?? this.peakTimes,
       focusGoalHrs: focusGoalHrs ?? this.focusGoalHrs,
       prismMode: prismMode ?? this.prismMode,
+      materials: materials ?? this.materials,
+      heardFrom: clearHeardFrom ? null : (heardFrom ?? this.heardFrom),
+      heardFromOther: heardFromOther ?? this.heardFromOther,
+      hasStudyHours: hasStudyHours ?? this.hasStudyHours,
+      studyDays: studyDays ?? this.studyDays,
+      studyFromMin: studyFromMin ?? this.studyFromMin,
+      studyUntilMin: studyUntilMin ?? this.studyUntilMin,
     );
   }
 }
@@ -99,7 +140,37 @@ class OnboardingController extends Notifier<OnboardingDraft> {
   }
 
   void setFocusGoal(double v) => state = state.copyWith(focusGoalHrs: v);
+
+  /// ob-source. Null (Skip) clears it.
+  void setHeardFrom(String? label, {String other = ''}) => state = label == null
+      ? state.copyWith(clearHeardFrom: true, heardFromOther: '')
+      : state.copyWith(heardFrom: label, heardFromOther: label == 'Other' ? other : '');
+
+  /// ob-hours.
+  void setStudyHours({required Set<int> days, required int fromMin, required int untilMin}) =>
+      state = state.copyWith(hasStudyHours: true, studyDays: days, studyFromMin: fromMin, studyUntilMin: untilMin);
+
+  /// "I don't have set hours": no study hours, and so no frosts from them.
+  void skipStudyHours() => state = state.copyWith(hasStudyHours: false);
   void setPrismMode(String v) => state = state.copyWith(prismMode: v);
+
+  /// Adds files picked on the syllabus/upload step (deduped by path).
+  void addMaterials(List<XFile> files) {
+    final seen = {for (final f in state.materials) f.path};
+    final next = [
+      ...state.materials,
+      for (final f in files)
+        if (seen.add(f.path)) f,
+    ];
+    state = state.copyWith(materials: next);
+  }
+
+  void removeMaterial(XFile file) => state = state.copyWith(
+        materials: [
+          for (final f in state.materials)
+            if (f.path != file.path) f,
+        ],
+      );
 
   void toggleSubject(String s) {
     final next = [...state.subjects];
@@ -157,8 +228,45 @@ class OnboardingController extends Notifier<OnboardingDraft> {
             subjects: subjects,
             referralCode: draft.referral.isEmpty ? null : draft.referral,
             workBestTimes: {'times': draft.peakTimes},
+            heardFrom: draft.heardFrom == null ? null : heardFromSlugs[draft.heardFrom],
+            heardFromOther: draft.heardFromOther.trim().isEmpty ? null : draft.heardFromOther.trim(),
+            studyDays: draft.hasStudyHours ? (draft.studyDays.toList()..sort()) : null,
+            studyFromMin: draft.hasStudyHours ? draft.studyFromMin : null,
+            studyUntilMin: draft.hasStudyHours ? draft.studyUntilMin : null,
           ),
         );
+
+    // Tier 1, and the *only* haptic in the whole wizard (spec §4.6): eleven
+    // steps with a buzz each is eleven chances to decide the app is noisy, at
+    // the exact moment someone is deciding whether to keep it. Fired here, the
+    // instant the server accepts — the material uploads and the mock guest-link
+    // below are best-effort extras that must not gate it, and must not repeat it.
+    ref.read(hapticsProvider).onboardingFinished();
+
+    // Live: `complete` provisioned the subjects server-side, so now push any
+    // syllabus/notes picked on the upload step to the first one. Best-effort —
+    // a failed upload never blocks onboarding (the user can re-add in Subjects).
+    if (!Env.useMocks && draft.materials.isNotEmpty) {
+      try {
+        final repo = ref.read(subjectsRepositoryProvider);
+        final subjects = await repo.all();
+        if (subjects.isNotEmpty) {
+          final subjectId = subjects.first.id;
+          for (final file in draft.materials) {
+            final bytes = await file.readAsBytes();
+            await repo.uploadFile(
+              subjectId: subjectId,
+              name: file.name,
+              kind: 'syllabus',
+              mimeType: file.mimeType,
+              bytes: bytes,
+            );
+          }
+        }
+      } on Object {
+        // Non-fatal.
+      }
+    }
 
     if (Env.useMocks) {
       final auth = ref.read(authRepositoryProvider);

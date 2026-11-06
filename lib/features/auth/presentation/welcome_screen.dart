@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -31,7 +33,7 @@ class WelcomeScreen extends ConsumerWidget {
                     Text(
                       'Welcome to\nAqademiq',
                       textAlign: TextAlign.center,
-                      style: AppText.sans(size: 27, weight: FontWeight.w800, letterSpacing: -0.5, height: 1.2, color: colors.text),
+                      style: AppText.sans(size: 34, weight: FontWeight.w800, letterSpacing: -0.5, height: 1.2, color: colors.text),
                     ),
                   ],
                 ),
@@ -42,7 +44,7 @@ class WelcomeScreen extends ConsumerWidget {
                   children: [
                     PrimaryButton(
                       label: 'Sign in / Sign up',
-                      onPressed: () => context.push(Routes.signin),
+                      onPressed: () => unawaited(context.push(Routes.signin)),
                     ),
                     const SizedBox(height: 9),
                     PrimaryButton(
@@ -54,10 +56,13 @@ class WelcomeScreen extends ConsumerWidget {
                       },
                     ),
                     const SizedBox(height: 12),
-                    Text(
-                      'Jumping in as a guest? Your progress saves the moment you create an account.',
-                      textAlign: TextAlign.center,
-                      style: AppText.sans(size: 10.5, height: 1.5, color: colors.textMed),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Text(
+                        'Jumping in as a guest? Your progress saves the moment you create an account.',
+                        textAlign: TextAlign.center,
+                        style: AppText.sans(size: 13, weight: FontWeight.w500, height: 1.5, color: colors.textDim),
+                      ),
                     ),
                   ],
                 ),

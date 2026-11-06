@@ -1,10 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/error/failure.dart';
+import '../../../data/auth/auth_repository.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/models/feedback_meta.dart';
 import '../../../data/models/feedback_post.dart';
 import '../../../data/repositories/feedback_repository.dart';
+import '../../../services/haptics/haptics_service.dart';
 import '../../settings/providers/profile_controller.dart';
 
 /// List / Board (kanban) view toggle for the feedback screen.
@@ -172,8 +174,13 @@ class FeedbackPostsController extends AsyncNotifier<List<FeedbackPost>> {
           .read(feedbackRepositoryProvider)
           .setVote(post.id, voted: voted);
       // The notifier may have been recreated while the request was in flight
-      // (Riverpod 3 recreates on invalidate) — touching state then throws.
+      // (Riverpod 3 recreates on invalidate) — touching state then throws, and
+      // so does reading a provider off a disposed ref, which is why the haptic
+      // sits below this guard rather than above it.
       if (!ref.mounted) return;
+      // Lightest thing in Tier 2 — it is a small commitment. On the server's
+      // answer rather than the tap, so a vote that did not stick stays silent.
+      ref.read(hapticsProvider).voteCast();
       state = AsyncData([
         for (final p in state.value ?? previous)
           if (p.id == post.id)
@@ -210,8 +217,53 @@ class FeedbackPostsController extends AsyncNotifier<List<FeedbackPost>> {
       createdAt: DateTime.now(),
     );
     final created = await ref.read(feedbackRepositoryProvider).create(draft);
-    if (ref.mounted) ref.invalidateSelf();
+    // After the post lands. The 403 / 429 / 400 paths throw out of here and are
+    // handled by the caller with a prompt or a message — a failed post is not
+    // one of Feedback's two budgeted events (§7).
+    if (ref.mounted) {
+      ref.read(hapticsProvider).suggestionPosted();
+      ref.invalidateSelf();
+    }
     return created;
+  }
+}
+
+/// Whether the user follows the post selected in
+/// [selectedFeedbackPostIdProvider] (FBK-6: the endpoints existed, nothing in
+/// the app called them).
+final feedbackSubscriptionProvider =
+    AsyncNotifierProvider<FeedbackSubscriptionController, bool>(
+  FeedbackSubscriptionController.new,
+);
+
+class FeedbackSubscriptionController extends AsyncNotifier<bool> {
+  @override
+  Future<bool> build() {
+    final id = ref.watch(selectedFeedbackPostIdProvider);
+    // Guests cannot follow (the server answers 403), so there is nothing to ask.
+    if (id == null || ref.watch(isGuestProvider)) return Future.value(false);
+    return ref.watch(feedbackRepositoryProvider).subscribed(id);
+  }
+
+  /// Optimistic, like voting: flips at once, then takes the server's answer,
+  /// or rolls back if the request fails. Returns false on failure.
+  Future<bool> toggle() async {
+    final id = ref.read(selectedFeedbackPostIdProvider);
+    final current = state.value;
+    if (id == null || current == null) return false;
+    state = AsyncData(!current);
+    try {
+      final now = await ref
+          .read(feedbackRepositoryProvider)
+          .setSubscribed(id, subscribed: !current);
+      // The selected post may have changed (rebuilding this notifier) while
+      // the request was in flight; a disposed ref must not be written to.
+      if (ref.mounted) state = AsyncData(now);
+      return true;
+    } on Object {
+      if (ref.mounted) state = AsyncData(current);
+      return false;
+    }
   }
 }
 

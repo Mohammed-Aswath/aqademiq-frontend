@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Aqademiq accent — tints the status-bar notification icon. -->
+    <color name="notification_color">#FF6B5CF0</color>
+    <!-- The colour SplashScreen's own Scaffold paints (AppColors.surface,
+         light). The system splash window uses the same one so the handover to
+         Flutter is a repaint of the same colour rather than a visible cut. -->
+    <color name="splash_background">#FFFFFFFF</color>
+    <!-- The session card (notification_focus*.xml), on a light shade: v11's
+         notif-android roles. Ice is pinned, never the accent: the design's
+         aq-ice here, aq-ice-on-dark in the night twin. ambient_ice also colours the
+         session cube (ambient_cube_NN, generated). Held, the rail's fill
+         drops to half (ambient_ice_held). -->
+    <color name="ambient_title">#FF1D1B20</color>
+    <color name="ambient_subtitle">#FF49454F</color>
+    <color name="ambient_ice">#FF6B5CF0</color>
+    <color name="ambient_ice_held">#806B5CF0</color>
+    <color name="ambient_rail_track">#14000000</color>
+    <color name="ambient_divider">#14000000</color>
+    <!-- The home-screen widgets (v11 wg-home). They follow the theme now:
+         a white card by day, #1C1C1E by night (values-night). -->
+    <color name="widget_background">#FFFFFFFF</color>
+    <color name="widget_ink">#FF111111</color>
+    <color name="widget_label">#FF6E6E73</color>
+    <color name="widget_accent">#FF6B5CF0</color>
+    <!-- Ink on the accent: the Focus widget's "Start 5 min" pill. -->
+    <color name="widget_on_accent">#FFFFFFFF</color>
+    <color name="widget_well">#FFECE9FB</color>
+    <!-- This week: the letters (DIM; today wears the accent), and the dashed
+         outline of a day with no check-in, the same in both themes. -->
+    <color name="widget_dim">#FFA7A7A7</color>
+    <color name="widget_day_empty">#FFD8D4CC</color>
+    <!-- The frost shield (freeze/ShieldActivity, APP_FREEZE.md §4): the
+         design's own ground, ink and pills. The secondary pill is
+         rgba(255,255,255,.88). -->
+    <color name="freeze_ground_top">#FFF8F6FF</color>
+    <color name="freeze_ground_mid">#FFEBE5FC</color>
+    <color name="freeze_ground_bottom">#FFDDD4F8</color>
+    <color name="freeze_ink">#FF1A1320</color>
+    <color name="freeze_line">#FF584F70</color>
+    <color name="freeze_primary">#FF111111</color>
+    <color name="freeze_on_primary">#FFFFFFFF</color>
+    <color name="freeze_secondary">#E0FFFFFF</color>
+    <color name="freeze_thaw_glyph">#FF6B5CF0</color>
+</resources>

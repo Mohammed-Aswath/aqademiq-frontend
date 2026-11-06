@@ -7,10 +7,12 @@ import 'package:go_router/go_router.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
+import '../../../data/auth/auth_repository.dart';
 import '../../../shared/widgets/app_text_field.dart';
-import '../../../shared/widgets/circle_back_button.dart';
 import '../../../shared/widgets/primary_button.dart';
+import '../../freeze/presentation/widgets/fz_widgets.dart';
 import '../controllers/auth_controller.dart';
+import 'widgets/password_eye.dart';
 
 /// FRAMES `auth-signup` — Create an account.
 class SignupScreen extends ConsumerStatefulWidget {
@@ -21,7 +23,7 @@ class SignupScreen extends ConsumerStatefulWidget {
 }
 
 class _SignupScreenState extends ConsumerState<SignupScreen> {
-  final _email = TextEditingController(text: 'ridhwan@bits.ac.in');
+  final _email = TextEditingController();
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   bool _obscure1 = true;
@@ -36,23 +38,39 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   }
 
   Future<void> _create() async {
+    // Local check first, so a typo in the confirm field never costs a round
+    // trip (or, worse, an account with a password nobody meant to set).
+    if (_password.text != _confirm.text) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text("Those two passwords don't match."),
+        ),
+      );
+      return;
+    }
     final ok = await ref.read(authControllerProvider.notifier).signUp(
           name: _email.text.split('@').first,
           email: _email.text,
           password: _password.text,
         );
-    if (ok && mounted) unawaited(context.push(Routes.verify));
+    if (!mounted) return;
+    if (ok) {
+      unawaited(context.push(Routes.verify));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(authErrorMessage(ref.read(authControllerProvider).error)),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     final busy = ref.watch(authControllerProvider).isLoading;
-
-    Widget eye({required bool obscure, required VoidCallback onToggle}) => IconButton(
-          icon: Icon(obscure ? Icons.visibility_off : Icons.visibility, size: 17, color: colors.textMed),
-          onPressed: onToggle,
-        );
 
     return Scaffold(
       backgroundColor: colors.surface,
@@ -62,11 +80,21 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Align(alignment: Alignment.centerLeft, child: CircleBackButton(onTap: () => context.pop())),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FzHeadButton(icon: 'back', fill: FzFill.well, onTap: () => context.pop()),
+              ),
               const SizedBox(height: 16),
-              Text('Create account', style: AppText.sans(size: 28, weight: FontWeight.w800, color: colors.text)),
+              Text('Create account', style: AppText.sans(size: 34, weight: FontWeight.w800, height: 1.2, color: colors.text)),
               const SizedBox(height: 4),
-              Text('Save your streak, grades & plan', style: AppText.sans(size: 12, color: colors.textMed)),
+              Text(
+                // A guest's account is upgraded in place, so this is a promise
+                // the sign-up can keep.
+                ref.watch(isGuestProvider)
+                    ? "Everything you've made as a guest comes with you"
+                    : 'Save your streak, grades & plan',
+                style: AppText.sans(size: 17, weight: FontWeight.w500, height: 1.4, color: colors.textMed),
+              ),
               const SizedBox(height: 22),
               const FieldLabel('Email'),
               AppTextField(controller: _email, keyboardType: TextInputType.emailAddress),
@@ -75,31 +103,35 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               AppTextField(
                 controller: _password,
                 obscureText: _obscure1,
-                suffix: eye(obscure: _obscure1, onToggle: () => setState(() => _obscure1 = !_obscure1)),
+                suffix: PasswordEye(obscured: _obscure1, onTap: () => setState(() => _obscure1 = !_obscure1)),
               ),
               const SizedBox(height: 14),
               const FieldLabel('Confirm password'),
               AppTextField(
                 controller: _confirm,
                 obscureText: _obscure2,
-                suffix: eye(obscure: _obscure2, onToggle: () => setState(() => _obscure2 = !_obscure2)),
+                suffix: PasswordEye(obscured: _obscure2, onTap: () => setState(() => _obscure2 = !_obscure2)),
               ),
               const SizedBox(height: 22),
               PrimaryButton(label: busy ? 'Creating…' : 'Create account →', onPressed: busy ? null : _create),
               const SizedBox(height: 14),
               Center(
                 child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: () => context.go(Routes.signin),
-                  child: Text.rich(
-                    TextSpan(
-                      text: 'Already have an account? ',
-                      style: AppText.sans(size: 11.5, color: colors.textMed),
-                      children: [
-                        TextSpan(
-                          text: 'Sign in',
-                          style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.text),
-                        ),
-                      ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text.rich(
+                      TextSpan(
+                        text: 'Already have an account? ',
+                        style: AppText.sans(size: 15, weight: FontWeight.w500, color: colors.textMed),
+                        children: [
+                          TextSpan(
+                            text: 'Sign in',
+                            style: AppText.sans(size: 15, weight: FontWeight.w700, color: colors.text),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

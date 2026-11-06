@@ -39,6 +39,14 @@ abstract interface class FeedbackSource {
   /// `POST` / `DELETE /feedback/posts/{ref}/vote` — one-per-user, idempotent.
   Future<FeedbackVoteResult> setVote(String id, {required bool voted});
 
+  /// Whether the user follows a post (`you_subscribed` on
+  /// `GET /feedback/posts/{ref}`). Followers get an email when it changes.
+  Future<bool> subscribed(String id);
+
+  /// `POST` / `DELETE /feedback/posts/{ref}/subscribe` — returns the server's
+  /// answer, which is the truth.
+  Future<bool> setSubscribed(String id, {required bool subscribed});
+
   /// Comments for a post, read from `GET /feedback/posts/{ref}`.
   Future<List<FeedbackCommentDto>> comments(String postId);
 
@@ -54,13 +62,16 @@ class MockFeedbackSource implements FeedbackSource {
   final List<FeedbackPostDto> _posts = [...Fixtures.feedbackPosts()];
   final List<FeedbackCommentDto> _comments = [...Fixtures.feedbackComments()];
 
+  // Mirrors `feedback_statuses` on the server (key, label and which appear on
+  // the roadmap). Seam 3 says the mock must behave like the real thing; when
+  // this drifted, mock mode kept exercising a status vocabulary production had
+  // not used for months, which is why nothing caught the mismatch.
   static const _statusLabels = <String, String>{
-    'open': 'Open',
+    'under_review': 'Under review',
     'planned': 'Planned',
     'in_progress': 'In progress',
-    'completed': 'Completed',
-    'acknowledged': 'Acknowledged',
-    'exists_already': 'Exists already',
+    'shipped': 'Shipped',
+    'declined': 'Declined',
   };
   static const _categoryLabels = <String, String>{
     'feature': 'Feature',
@@ -76,7 +87,9 @@ class MockFeedbackSource implements FeedbackSource {
               FeedbackStatusMetaDto(
                 key: e.key,
                 label: e.value,
-                onRoadmap: e.key == 'planned' || e.key == 'in_progress',
+                onRoadmap: e.key == 'planned' ||
+                    e.key == 'in_progress' ||
+                    e.key == 'shipped',
               ),
           ],
           categories: [
@@ -126,7 +139,7 @@ class MockFeedbackSource implements FeedbackSource {
           ? 'fb-${DateTime.now().microsecondsSinceEpoch}'
           : input.id,
       number: maxNumber + 1,
-      status: 'open',
+      status: 'under_review',
       votes: 1,
       hasVoted: true,
     );
@@ -146,6 +159,20 @@ class MockFeedbackSource implements FeedbackSource {
       );
     }
     return mockDelay((votes: _posts[i].votes, voted: _posts[i].hasVoted));
+  }
+
+  final Set<String> _following = {};
+
+  @override
+  Future<bool> subscribed(String id) => mockDelay(_following.contains(id));
+
+  @override
+  Future<bool> setSubscribed(String id, {required bool subscribed}) {
+    if (!_posts.any((p) => p.id == id)) {
+      throw const NotFoundFailure(message: 'Suggestion not found.');
+    }
+    subscribed ? _following.add(id) : _following.remove(id);
+    return mockDelay(subscribed);
   }
 
   @override
@@ -246,6 +273,20 @@ class ApiFeedbackSource implements FeedbackSource {
   }
 
   @override
+  Future<bool> subscribed(String id) async {
+    final body = await _dio.getMap('/feedback/posts/$id');
+    return body['you_subscribed'] as bool? ?? false;
+  }
+
+  @override
+  Future<bool> setSubscribed(String id, {required bool subscribed}) async {
+    final json = subscribed
+        ? await _dio.postMap('/feedback/posts/$id/subscribe')
+        : await _dio.deleteMap('/feedback/posts/$id/subscribe');
+    return json['you_subscribed'] as bool? ?? subscribed;
+  }
+
+  @override
   Future<List<FeedbackCommentDto>> comments(String postId) async {
     // The contract exposes comments only via the post-detail endpoint.
     final body = await _dio.getMap('/feedback/posts/$postId');
@@ -270,7 +311,7 @@ class ApiFeedbackSource implements FeedbackSource {
       number: ref,
       title: j['title'] as String? ?? '',
       body: j['body'] as String? ?? '',
-      status: j['status'] as String? ?? 'open',
+      status: j['status'] as String? ?? 'under_review',
       category: j['category'] as String? ?? 'feature',
       votes: (j['upvotes'] as num?)?.toInt() ?? 0,
       hasVoted: j['you_voted'] as bool? ?? false,

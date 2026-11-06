@@ -4,10 +4,25 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text.dart';
+import '../icons/aq_icon.dart';
+import 'ic.dart';
 
-/// Study-tag pill (prototype `TagChip`): dot + label + optional ✕, 1.5px solid
-/// or dashed border, full radius. Used in forms/Settings (the timeline task row
-/// uses a borderless inline tag instead).
+/// The seven built-in study tags that lead with their Tier 2 task glyph
+/// (v11 `AQ_TAG`). Any other tag, and every subject, keeps the dot.
+const Set<String> _kGlyphTags = {
+  'Lecture',
+  'Class',
+  'Exam',
+  'Assignment',
+  'Report',
+  'Presentation',
+  'Reading',
+};
+
+/// Study-tag pill (v11 `TagChip`): a 36-high capsule, 15/600, led by the
+/// tag's task glyph (built-in tags) or a dot, with an optional ✕; 1.5 solid or
+/// dashed border. Used in forms/Settings (the timeline task row uses a
+/// borderless inline tag instead).
 class TagChip extends StatelessWidget {
   const TagChip({
     super.key,
@@ -29,6 +44,7 @@ class TagChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final c = color;
     final borderColor = dashed
         ? (c ?? colors.textDim)
@@ -39,36 +55,53 @@ class TagChip extends StatelessWidget {
     final textColor = dashed
         ? (c ?? colors.textMed)
         : (active ? (c ?? colors.accent) : colors.textMed);
+    final task = (!dashed && _kGlyphTags.contains(label)) ? AqTaskIcons.byLabel[label] : null;
+
+    Widget? lead;
+    if (task != null) {
+      lead = AqTaskIcon(task, size: 18, color: dark ? c : null);
+    } else if (!dashed && c != null) {
+      lead = Container(
+        width: 7,
+        height: 7,
+        decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+      );
+    }
 
     return GestureDetector(
       onTap: onTap,
       child: CustomPaint(
         painter: _ChipBorderPainter(border: borderColor, fill: fill, dashed: dashed),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 11),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (!dashed && c != null) ...[
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+        child: SizedBox(
+          height: 36,
+          child: Padding(
+            padding: EdgeInsets.only(left: task != null ? 11 : 14, right: 14),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (lead != null) ...[lead, const SizedBox(width: 6)],
+                // A long tag ellipsizes instead of overflowing its Wrap row. A
+                // cap rather than Flexible: chips also sit in horizontal scroll
+                // rows, where there is no bounded width to flex into.
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.sans(size: 15, color: textColor),
+                  ),
                 ),
-                const SizedBox(width: 6),
+                if (onRemove != null) ...[
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: onRemove,
+                    child: Ic('close', size: 16, color: textColor),
+                  ),
+                ],
               ],
-              Text(
-                label,
-                style: AppText.sans(size: 11, color: textColor),
-              ),
-              if (onRemove != null) ...[
-                const SizedBox(width: 6),
-                GestureDetector(
-                  onTap: onRemove,
-                  child: Icon(Icons.close, size: 12, color: textColor),
-                ),
-              ],
-            ],
+            ),
           ),
         ),
       ),
@@ -97,13 +130,15 @@ class _ChipBorderPainter extends CustomPainter {
       ..strokeWidth = 1.5
       ..color = border;
 
+    // Inset by half the stroke so the 1.5 border sits inside the 36 capsule.
+    final inner = rrect.deflate(0.75);
     if (!dashed) {
-      canvas.drawRRect(rrect, stroke);
+      canvas.drawRRect(inner, stroke);
       return;
     }
 
-    final path = Path()..addRRect(rrect);
-    const dash = 3.0;
+    final path = Path()..addRRect(inner);
+    const dash = 4.0;
     const gap = 3.0;
     for (final metric in path.computeMetrics()) {
       var dist = 0.0;

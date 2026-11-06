@@ -5,8 +5,10 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text.dart';
 import '../../../../core/utils/hex_color.dart';
 import '../../../../data/models/tag.dart';
+import '../../../../data/models/tag_resolve.dart';
 import '../../../../data/models/task.dart';
 import '../../../../data/repositories/tags_repository.dart';
+import '../../../../shared/icons/app_icon.dart';
 import '../../../../shared/widgets/primary_button.dart';
 import '../../../plan/providers/plan_providers.dart';
 
@@ -57,7 +59,7 @@ class _LinkTaskSheetState extends ConsumerState<_LinkTaskSheet> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final tasks = ref.watch(dayTasksProvider).value ?? const <Task>[];
-    final tagsById = ref.watch(tagsByIdProvider).value ?? const <String, Tag>{};
+    final tagsById = ref.watch(tagsByIdProvider);
     final effectiveId = _selectedId ?? (tasks.isNotEmpty ? tasks.first.id : null);
 
     return Container(
@@ -111,7 +113,7 @@ class _LinkTaskSheetState extends ConsumerState<_LinkTaskSheet> {
               for (final t in tasks)
                 _TaskRow(
                   task: t,
-                  tag: tagsById[t.tagId],
+                  tag: resolveStudyTag(tagsById.values, t.tagId),
                   selected: !_noTask && t.id == effectiveId,
                   onTap: () => setState(() {
                     _noTask = false;
@@ -154,13 +156,13 @@ class _NoTaskRow extends StatelessWidget {
               height: 30,
               alignment: Alignment.center,
               decoration: BoxDecoration(color: colors.bg, shape: BoxShape.circle),
-              child: Icon(Icons.do_not_disturb_on, size: 17, color: colors.textMed),
+              child: AppIcon(Icons.do_not_disturb_on, size: 17, color: colors.textMed),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Text('Focus without a task', style: AppText.sans(size: 12.5, weight: FontWeight.w700, color: colors.text)),
             ),
-            Icon(
+            AppIcon(
               selected ? Icons.check_circle : Icons.radio_button_unchecked,
               size: 19,
               color: selected ? colors.accent : _uncheckedColor,
@@ -184,7 +186,7 @@ class _TaskRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final color = tag != null ? hexColor(tag!.color) : colors.accent;
-    final meta = '${tag?.label ?? task.tagId} · ${task.durationMin ?? 0}m';
+    final meta = '${studyTagLabel(tag, task.tagId)} · ${task.durationMin ?? 0}m';
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -205,7 +207,7 @@ class _TaskRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
+            AppIcon(
               selected ? Icons.check_circle : Icons.radio_button_unchecked,
               size: 19,
               color: selected ? colors.accent : _uncheckedColor,

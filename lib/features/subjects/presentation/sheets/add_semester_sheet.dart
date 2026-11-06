@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,8 +9,9 @@ import '../../../../core/theme/app_text.dart';
 import '../../../../data/models/subject.dart';
 import '../../../../data/repositories/subjects_repository.dart';
 import '../../../../shared/widgets/app_bottom_sheet.dart';
-import '../../../../shared/widgets/app_text_field.dart';
+import '../../../../shared/widgets/ic.dart';
 import '../../../../shared/widgets/primary_button.dart';
+import '../widgets/subject_bits.dart';
 
 /// subj-add-sem — "Add semester" bottom sheet (routed through [showAppBottomSheet]
 /// so it lifts above the keyboard, fixing SUBJ-1).
@@ -36,13 +39,27 @@ class _AddSemesterBody extends ConsumerStatefulWidget {
 
 class _AddSemesterBodyState extends ConsumerState<_AddSemesterBody> {
   static const List<String> _terms = ['Spring', 'Summer', 'Fall'];
+  static const List<String> _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
 
-  final TextEditingController _nameController =
-      TextEditingController(text: "Fall '26");
+  final TextEditingController _nameController = TextEditingController();
 
   // "Fall" is the active term in the spec (index 2).
   int _termIdx = 2;
+  late DateTime _startDate;
+  late DateTime _endDate;
+  // Once the user hand-edits the name we stop overwriting it from the term.
+  bool _nameEdited = false;
   bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyTermDefaults(_termIdx, updateName: true);
+    _nameController.addListener(() => _nameEdited = true);
+  }
 
   @override
   void dispose() {
@@ -50,26 +67,105 @@ class _AddSemesterBodyState extends ConsumerState<_AddSemesterBody> {
     super.dispose();
   }
 
+  /// Term → sensible default name + start/end range for the current year.
+  void _applyTermDefaults(int idx, {required bool updateName}) {
+    final year = DateTime.now().year;
+    switch (idx) {
+      case 0: // Spring
+        _startDate = DateTime(year, 1, 15);
+        _endDate = DateTime(year, 5, 10);
+      case 1: // Summer
+        _startDate = DateTime(year, 6);
+        _endDate = DateTime(year, 8, 20);
+      default: // Fall
+        _startDate = DateTime(year, 9);
+        _endDate = DateTime(year, 12, 20);
+    }
+    if (updateName) {
+      final label = "${_terms[idx]} '${year % 100}";
+      _nameController.value = TextEditingValue(text: label);
+      _nameEdited = false;
+    }
+  }
+
+  void _onTermSelected(int idx) {
+    setState(() {
+      _termIdx = idx;
+      _applyTermDefaults(idx, updateName: !_nameEdited);
+    });
+  }
+
+  String _fmt(DateTime d) => '${d.day} ${_months[d.month - 1]} ${d.year}';
+
+  Future<void> _pickDate({required bool isStart}) async {
+    final initial = isStart ? _startDate : _endDate;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(initial.year - 5),
+      lastDate: DateTime(initial.year + 5),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      if (isStart) {
+        _startDate = picked;
+        if (_endDate.isBefore(_startDate)) _endDate = _startDate;
+      } else {
+        _endDate = picked;
+        if (_endDate.isBefore(_startDate)) _startDate = _endDate;
+      }
+    });
+  }
+
   Future<void> _create() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(content: Text('Name your semester first.')),
       );
       return;
     }
+
+    // Dedupe: if a semester with this name already exists, select it instead of
+    // creating a look-alike duplicate.
+    final existing = ref.read(semestersProvider).value ?? const <Semester>[];
+    final lower = name.toLowerCase();
+    Semester? dupe;
+    for (final s in existing) {
+      if (s.name.trim().toLowerCase() == lower) {
+        dupe = s;
+        break;
+      }
+    }
+    if (dupe != null) {
+      ref.read(selectedSemesterProvider.notifier).select(dupe.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text('You already have a "${dupe.name}" semester.')),
+      );
+      navigator.pop(dupe);
+      return;
+    }
+
     setState(() => _saving = true);
+    // Read before the await: the sheet can be dismissed while the save is in
+    // flight, and `ref` is unusable once it is.
+    final semesters = ref.read(semestersProvider.notifier);
+    final selection = ref.read(selectedSemesterProvider.notifier);
     try {
-      final saved = await ref
-          .read(semestersProvider.notifier)
-          .save(Semester(id: '', name: name));
-      ref.read(selectedSemesterProvider.notifier).select(saved.id);
+      final saved = await semesters.save(
+        Semester(id: '', name: name),
+        start: _startDate,
+        end: _endDate,
+      );
+      selection.select(saved.id);
       if (!mounted) return;
-      Navigator.of(context).pop(saved);
+      navigator.pop(saved);
     } on Exception {
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't create semester. Try again.")),
       );
     }
@@ -81,25 +177,33 @@ class _AddSemesterBodyState extends ConsumerState<_AddSemesterBody> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const FieldLabel('Name'),
-        AppTextField(controller: _nameController),
+        const SubjLabel('Name'),
+        SubjInput(controller: _nameController),
         const SizedBox(height: 12),
-        const FieldLabel('Term'),
+        const SubjLabel('Term'),
         _TermSelector(
           terms: _terms,
           selectedIndex: _termIdx,
-          onSelect: (i) => setState(() => _termIdx = i),
+          onSelect: _onTermSelected,
         ),
         const SizedBox(height: 12),
-        const Row(
+        Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: _DateColumn(label: 'Starts', value: '1 Sep 2026'),
+              child: _DateColumn(
+                label: 'Starts',
+                value: _fmt(_startDate),
+                onTap: () => unawaited(_pickDate(isStart: true)),
+              ),
             ),
-            SizedBox(width: 10),
+            const SizedBox(width: 10),
             Expanded(
-              child: _DateColumn(label: 'Ends', value: '20 Dec 2026'),
+              child: _DateColumn(
+                label: 'Ends',
+                value: _fmt(_endDate),
+                onTap: () => unawaited(_pickDate(isStart: false)),
+              ),
             ),
           ],
         ),
@@ -151,8 +255,9 @@ class _TermSelector extends StatelessWidget {
                 ),
                 child: Text(
                   terms[i],
+                  maxLines: 1,
                   style: AppText.sans(
-                    size: 12.5,
+                    size: 17,
                     weight: FontWeight.w800,
                     color: i == selectedIndex ? colors.accent : colors.textMed,
                   ),
@@ -167,13 +272,18 @@ class _TermSelector extends StatelessWidget {
 }
 
 /// A labelled read-only date box (one column of the Starts/Ends row): a
-/// [FieldLabel] over a `bg`-filled box (radius 12, 11×14 padding) showing the
-/// date at 12.5/w700.
+/// [SubjLabel] over a `bg`-filled box (radius 12, 11×14 padding) showing the
+/// date at 17/w700.
 class _DateColumn extends StatelessWidget {
-  const _DateColumn({required this.label, required this.value});
+  const _DateColumn({
+    required this.label,
+    required this.value,
+    this.onTap,
+  });
 
   final String label;
   final String value;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -181,19 +291,33 @@ class _DateColumn extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        FieldLabel(label),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          decoration: BoxDecoration(
-            color: colors.bg,
-            borderRadius: BorderRadius.circular(AppRadius.cellSmall),
-          ),
-          child: Text(
-            value,
-            style: AppText.sans(
-              size: 12.5,
-              weight: FontWeight.w700,
-              color: colors.text,
+        SubjLabel(label),
+        GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            decoration: BoxDecoration(
+              color: colors.bg,
+              borderRadius: BorderRadius.circular(AppRadius.cellSmall),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.sans(
+                      size: 17,
+                      weight: FontWeight.w700,
+                      color: colors.text,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Ic('calendar_today', size: 16, color: colors.textDim),
+              ],
             ),
           ),
         ),

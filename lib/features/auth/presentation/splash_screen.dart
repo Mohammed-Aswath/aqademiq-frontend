@@ -1,28 +1,45 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/env/env.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text.dart';
+import '../../ada/presentation/widgets/think_mark.dart';
+import '../../onboarding/onboarding_gate.dart';
 
-/// FRAMES `splash` — brand splash, auto-advances to Welcome.
-class SplashScreen extends StatefulWidget {
+/// FRAMES `splash` — brand splash. Restores a persisted session on launch:
+/// a signed-in user goes straight to the app (or into onboarding if it isn't
+/// finished yet); otherwise on to Welcome.
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends ConsumerState<SplashScreen> {
   Timer? _timer;
 
   @override
   void initState() {
     super.initState();
     _timer = Timer(const Duration(milliseconds: 1600), () {
-      if (mounted) context.go(Routes.welcome);
+      if (!mounted) return;
+      // supabase_flutter persists the session, so a returning user is already
+      // signed in here — skip the sign-in wall and route into the app.
+      final signedIn = !Env.useMocks &&
+          Env.hasSupabase &&
+          Supabase.instance.client.auth.currentSession != null;
+      if (signedIn) {
+        unawaited(routeAfterAuth(context, ref));
+      } else {
+        context.go(Routes.welcome);
+      }
     });
   }
 
@@ -52,29 +69,25 @@ class _SplashScreenState extends State<SplashScreen> {
                 const SizedBox(height: 6),
                 Text(
                   'Your focus sanctuary.',
-                  style: AppText.sans(size: 12, letterSpacing: AppText.em(0.07, 12), color: colors.textDim),
+                  style: AppText.sans(
+                    size: 15,
+                    weight: FontWeight.w500,
+                    letterSpacing: AppText.em(0.07, 15),
+                    color: colors.textDim,
+                  ),
                 ),
               ],
             ),
           ),
+          // v11 SPLASH: the state-mark loader, 34 above the bottom edge.
+          // Not const: the unnamed Semantics constructor is not a const one.
           Positioned(
-            bottom: 30,
+            bottom: 34,
             left: 0,
             right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                for (var i = 0; i < 3; i++)
-                  Container(
-                    width: 6,
-                    height: 6,
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: i == 0 ? colors.accent : colors.textDim.withValues(alpha: 0.4),
-                    ),
-                  ),
-              ],
+            child: Semantics(
+              label: 'Loading',
+              child: const Center(child: ThinkMark(size: 26)),
             ),
           ),
         ],

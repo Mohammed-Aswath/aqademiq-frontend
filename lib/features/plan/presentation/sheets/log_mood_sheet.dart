@@ -1,114 +1,180 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_colors.dart';
-import '../../../../core/theme/app_radius.dart';
 import '../../../../core/theme/app_text.dart';
+import '../../../../services/haptics/haptics_service.dart';
 import '../../../../shared/widgets/mood_blob.dart';
 import '../../../../shared/widgets/primary_button.dart';
+import '../widgets/plan_sheet.dart';
 
-/// MOODS palette (index 0→4): Rough, Tired, OK, Good, Great. These match the
-/// `border` tone of each cube tone in the prototype.
-const List<Color> _moodColors = [
-  Color(0xFFA79FC4),
-  Color(0xFF9286D2),
-  Color(0xFF7D70D9),
-  Color(0xFF6A5CE4),
-  Color(0xFF5A44F1),
-];
+/// Result of [showLogMoodSheet]. [note] is null when the optional reflection
+/// field was not shown; otherwise it is the trimmed text (may be empty).
+typedef LogMoodResult = ({int mood, String? note});
 
-/// plan-logmood — "How are you feeling?" check-in bottom sheet.
+/// "How are you feeling?" check-in, the v11 floating sheet (plan-logmood).
 ///
-/// Presents the 5-step mood scale (idx 0–4) with idx 3 (Good) preselected.
-/// Returns the chosen mood index on "Log mood", or `null` if the user taps
-/// "Skip for now" or dismisses the sheet.
-Future<int?> showLogMoodSheet(BuildContext context) {
-  return showModalBottomSheet<int>(
-    context: context,
-    useRootNavigator: true,
-    backgroundColor: Colors.transparent,
-    barrierColor: const Color(0x42140F1C),
-    isScrollControlled: true,
-    builder: (context) => const _LogMoodSheet(),
+/// Presents the 5-step mood scale (idx 0–4) with [initialMood] preselected
+/// (default Good / 3). Optionally shows a reflection field when [includeNote]
+/// is true (Stats edit flow). Returns the chosen mood on "Log mood", or `null`
+/// if the user taps "Skip for now" or dismisses the sheet.
+///
+/// Reflection is never required — empty note is a valid save, matching Planner.
+Future<LogMoodResult?> showLogMoodSheet(
+  BuildContext context, {
+  int initialMood = 3,
+  String? initialNote,
+  bool includeNote = false,
+}) {
+  return showPlanSheet<LogMoodResult>(
+    context,
+    scrim: const Color(0x42140F1C),
+    padding: const EdgeInsets.fromLTRB(18, 6, 18, 38),
+    builder: (_) => _LogMoodSheet(
+      initialMood: initialMood.clamp(0, 4),
+      initialNote: initialNote,
+      includeNote: includeNote,
+    ),
   );
 }
 
-class _LogMoodSheet extends StatefulWidget {
-  const _LogMoodSheet();
+/// Consumer-backed only so the ramp detent can reach `hapticsProvider`; this
+/// sheet still owns no app state and still returns its result by popping.
+class _LogMoodSheet extends ConsumerStatefulWidget {
+  const _LogMoodSheet({
+    required this.initialMood,
+    required this.initialNote,
+    required this.includeNote,
+  });
+
+  final int initialMood;
+  final String? initialNote;
+  final bool includeNote;
 
   @override
-  State<_LogMoodSheet> createState() => _LogMoodSheetState();
+  ConsumerState<_LogMoodSheet> createState() => _LogMoodSheetState();
 }
 
-class _LogMoodSheetState extends State<_LogMoodSheet> {
-  int _selected = 3;
+class _LogMoodSheetState extends ConsumerState<_LogMoodSheet> {
+  late int _selected = widget.initialMood;
+  late final TextEditingController _note = TextEditingController(
+    text: widget.initialNote ?? '',
+  );
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  /// Tier 3 detent on an actual move, following the melt ramp (§5.1).
+  ///
+  /// The *commit* haptic is not fired here: this sheet only reports a choice,
+  /// and its callers (Plan's menu, Stats' day editor) write the log and fire
+  /// `moodLogged` once the write lands.
+  void _select(int idx) {
+    if (idx != _selected) ref.read(hapticsProvider).moodRampStep(idx);
+    setState(() => _selected = idx);
+  }
+
+  void _submit() {
+    Navigator.of(context).pop((
+      mood: _selected,
+      note: widget.includeNote ? _note.text.trim() : null,
+    ));
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(AppRadius.sheetTop),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 4),
+        Text(
+          'How are you feeling?',
+          textAlign: TextAlign.center,
+          style: AppText.sans(size: 28, weight: FontWeight.w800, color: colors.text),
         ),
-        boxShadow: colors.sheetShadow,
-      ),
-      padding: const EdgeInsets.fromLTRB(18, 12, 18, 22),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        const SizedBox(height: 4),
+        Text(
+          'A quick check-in helps Ada tune your day',
+          textAlign: TextAlign.center,
+          style: AppText.sans(size: 15, weight: FontWeight.w500, color: colors.textMed),
+        ),
+        const SizedBox(height: 20),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Container(
-                width: 38,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE0DDD7),
-                  borderRadius: BorderRadius.circular(2),
+              for (var i = 0; i < 5; i++)
+                _MoodColumn(
+                  idx: i,
+                  selected: _selected == i,
+                  onTap: () => _select(i),
                 ),
-              ),
-              Text(
-                'How are you feeling?',
-                textAlign: TextAlign.center,
-                style: AppText.sans(size: 21, weight: FontWeight.w800),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'A quick check-in helps Ada tune your day',
-                textAlign: TextAlign.center,
-                style: AppText.sans(size: 11.5, color: colors.textMed),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  for (var i = 0; i < 5; i++) _MoodColumn(
-                    idx: i,
-                    selected: _selected == i,
-                    onTap: () => setState(() => _selected = i),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              PrimaryButton(
-                label: 'Log mood',
-                onPressed: () => Navigator.of(context).pop(_selected),
-              ),
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: () => Navigator.of(context).pop(),
-                child: Text(
-                  'Skip for now',
-                  style: AppText.sans(size: 11.5, color: colors.textMed),
-                ),
-              ),
             ],
           ),
         ),
-      ),
+        if (widget.includeNote) ...[
+          const SizedBox(height: 18),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: Text(
+              'REFLECTION (OPTIONAL)',
+              style: AppText.sans(
+                size: 12,
+                weight: FontWeight.w800,
+                letterSpacing: AppText.em(0.12, 12),
+                color: colors.textDim,
+              ),
+            ),
+          ),
+          Container(
+            constraints: const BoxConstraints(minHeight: 70),
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+            decoration: BoxDecoration(
+              color: colors.bg,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: TextField(
+              controller: _note,
+              minLines: 2,
+              maxLines: 4,
+              cursorColor: colors.text,
+              style: AppText.sans(size: 17, weight: FontWeight.w500, color: colors.text),
+              decoration: InputDecoration.collapsed(
+                hintText: 'What made today that way?',
+                hintStyle: AppText.sans(size: 17, weight: FontWeight.w500, color: colors.textDim),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 22),
+        PrimaryButton(
+          label: 'Log mood',
+          onPressed: _submit,
+        ),
+        const SizedBox(height: 4),
+        Center(
+          child: Semantics(
+            button: true,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.of(context).pop(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Text(
+                  'Skip for now',
+                  style: AppText.sans(size: 15, color: colors.textMed),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -127,36 +193,48 @@ class _MoodColumn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final moodColor = _moodColors[idx];
+    final moodColor = MoodScale.colors[idx];
 
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: MoodScale.labels[idx],
+      excludeSemantics: true,
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: selected ? moodColor.alpha8(0x1E) : null,
-              border: Border.all(
-                color: selected ? moodColor : Colors.transparent,
-                width: 2,
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(
+          width: 52,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: selected ? moodColor.alpha8(0x1E) : null,
+                  border: Border.all(
+                    color: selected ? moodColor : Colors.transparent,
+                    width: 2,
+                  ),
+                ),
+                child: MoodBlob(idx: idx, size: 34),
               ),
-            ),
-            child: MoodBlob(idx: idx, size: selected ? 34 : 32),
+              const SizedBox(height: 7),
+              Text(
+                MoodScale.labels[idx],
+                maxLines: 1,
+                softWrap: false,
+                style: AppText.sans(
+                  size: 12,
+                  weight: selected ? FontWeight.w800 : FontWeight.w600,
+                  color: selected ? moodColor : colors.textMed,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            MoodScale.labels[idx],
-            style: AppText.sans(
-              size: 8.5,
-              weight: selected ? FontWeight.w800 : FontWeight.w600,
-              color: selected ? moodColor : colors.textMed,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

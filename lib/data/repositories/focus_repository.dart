@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/env/env.dart';
 import '../../core/network/dio_client.dart';
+import '../../services/haptics/haptics_service.dart';
 import '../adapters/adapters.dart';
 import '../dtos/focus_session_dto.dart';
 import '../models/enums.dart';
@@ -39,8 +40,14 @@ class FocusRepository {
       (await _source.checkpoint(id, elapsedSec: elapsedSec, paused: paused))
           .toModel();
 
-  Future<FocusSession> complete(String id, {int? mood, int? elapsedSec}) async =>
-      (await _source.complete(id, mood: mood, elapsedSec: elapsedSec)).toModel();
+  Future<FocusSession> complete(
+    String id, {
+    int? mood,
+    int? elapsedSec,
+    int? rating,
+  }) async =>
+      (await _source.complete(id, mood: mood, elapsedSec: elapsedSec, rating: rating))
+          .toModel();
 }
 
 final focusRepositoryProvider = Provider<FocusRepository>((ref) {
@@ -80,18 +87,56 @@ class FocusController extends Notifier<FocusSession> {
           taskId: state.taskId,
           prismMode: state.prismMode,
         );
-    state = session.copyWith(status: FocusStatus.running, elapsedSec: 0);
+    // Deliberately ABOVE the state assignment, in the window where the
+    // repository has confirmed the session but the status is not yet running.
+    //
+    // `HapticGovernor.sessionTransitions` does not allow-list focusStarted:
+    // spec §4.2 permits only freeze, resume and end during a run, and widening
+    // the strictest rule in the document to cover the interior of a session is
+    // a worse trade than depending on this ordering. Moving the haptic below
+    // the assignment silently deletes it — that is what the governor test
+    // "nothing fires while running, except freeze / resume / end" is pinning.
+    ref.read(hapticsProvider).focusStarted();
+    // `endsAt` is anchored to the local clock rather than the server's
+    // `startedAt`: the 1s timer below also starts now, and the ambient surfaces
+    // count down from `endsAt` while the app counts `elapsedSec` up. Anchoring
+    // both to the same instant is what stops the two clocks drifting apart.
+    final now = DateTime.now();
+    state = session.copyWith(
+      status: FocusStatus.running,
+      elapsedSec: 0,
+      startedAt: session.startedAt ?? now,
+      endsAt: now.add(Duration(minutes: session.durationMin)),
+      frozenAt: null,
+    );
     _startTimer();
   }
 
   void pause() {
     _timer?.cancel();
-    state = state.copyWith(status: FocusStatus.paused);
+    // Stamping the freeze instant is what lets `resume` tell held time from
+    // spent time; `endsAt` is deliberately left stale until then.
+    state = state.copyWith(status: FocusStatus.paused, frozenAt: DateTime.now());
+    // §5.3 — Freeze is the product's most characteristic interaction and the
+    // sharpest thing in Tier 2: a lock engaging.
+    ref.read(hapticsProvider).sessionFrozen();
     _persistCheckpoint(paused: true);
   }
 
   void resume() {
-    state = state.copyWith(status: FocusStatus.running);
+    // Held time is not spent time: push the end out by the whole freeze so the
+    // countdown resumes where it stopped rather than where it would have been.
+    final frozenAt = state.frozenAt;
+    final endsAt = state.endsAt;
+    state = state.copyWith(
+      status: FocusStatus.running,
+      endsAt: (frozenAt != null && endsAt != null)
+          ? endsAt.add(DateTime.now().difference(frozenAt))
+          : endsAt,
+      frozenAt: null,
+    );
+    // The release of the freeze, softer than the lock that preceded it.
+    ref.read(hapticsProvider).sessionResumed();
     _startTimer();
     _persistCheckpoint(paused: false);
   }
@@ -107,17 +152,47 @@ class FocusController extends Notifier<FocusSession> {
     );
   }
 
-  Future<void> complete({int? mood}) async {
+  /// The one haptic a session's ending earns — fired at most once per session.
+  ///
+  /// Guide §4.1 / spec §4.3: one user action, one haptic, even when it causes
+  /// several state changes internally. Two things make that non-trivial here:
+  ///
+  ///  * [complete] genuinely runs **twice** on the end-early path — once from
+  ///    the timer's End button, then again when the summary screen submits the
+  ///    mood and rating (which is safe by design; the server pins `ended_at` to
+  ///    the first one);
+  ///  * a session that runs to its end never calls [complete] at all — the tick
+  ///    in [_startTimer] flips the status, and the summary screen submits later.
+  ///
+  /// So the trigger is the *transition into completed*, not either call site.
+  /// Must be called while the status is still the old one.
+  void _resolveOnce({required bool naturally}) {
+    if (state.status == FocusStatus.completed) return;
+    final haptics = ref.read(hapticsProvider);
+    if (naturally) {
+      // Tier 1, and the only composite in the app: two beats, second stronger.
+      haptics.focusCompleted();
+    } else {
+      // §5.2 — the melted end. Not punishing; simply not a reward.
+      haptics.sessionEndedEarly();
+    }
+  }
+
+  Future<void> complete({int? mood, int? rating}) async {
     _timer?.cancel();
+    _resolveOnce(naturally: state.elapsedSec >= state.durationMin * 60);
     state = state.copyWith(
       status: FocusStatus.completed,
       completedAt: DateTime.now(),
       endMood: mood,
+      // A finished session is not a held one — leaving the freeze stamp set
+      // would make `remaining` keep reporting from the moment it was frozen.
+      frozenAt: null,
     );
     if (state.id.isNotEmpty) {
       await ref
           .read(focusRepositoryProvider)
-          .complete(state.id, mood: mood, elapsedSec: state.elapsedSec);
+          .complete(state.id, mood: mood, elapsedSec: state.elapsedSec, rating: rating);
     }
   }
 
@@ -133,6 +208,9 @@ class FocusController extends Notifier<FocusSession> {
       final next = state.elapsedSec + 1;
       if (next >= total) {
         _timer?.cancel();
+        // Reached its end naturally — the Tier 1 moment, fired here rather than
+        // in complete() because complete() is not on this path.
+        _resolveOnce(naturally: true);
         state = state.copyWith(elapsedSec: total, status: FocusStatus.completed);
       } else {
         state = state.copyWith(elapsedSec: next);
